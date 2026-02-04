@@ -166,12 +166,13 @@ nanobot agent -m "Hello from my local LLM!"
 
 ## 💬 Chat Apps
 
-Talk to your nanobot through Telegram or WhatsApp — anytime, anywhere.
+Talk to your nanobot through Telegram, WhatsApp, or Discord — anytime, anywhere.
 
 | Channel | Setup |
 |---------|-------|
 | **Telegram** | Easy (just a token) |
 | **WhatsApp** | Medium (scan QR) |
+| **Discord** | Easy (just a token) |
 
 <details>
 <summary><b>Telegram</b> (Recommended)</summary>
@@ -202,6 +203,50 @@ Talk to your nanobot through Telegram or WhatsApp — anytime, anywhere.
 ```bash
 nanobot gateway
 ```
+
+</details>
+
+<details>
+<summary><b>Discord</b>
+
+**1. Create a bot**
+- Go to [Discord Developer Portal](https://discord.com/developers/applications)
+- Create an application → Bot → Create Bot
+- Copy the token
+- Enable "Message Content Intent" under Privileged Gateway Intents
+
+**2. Configure**
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "YOUR_BOT_TOKEN",
+      "allowFrom": [],
+      "adminUsers": ["YOUR_DISCORD_USER_ID"]
+    }
+  }
+}
+```
+
+> Get your user ID by enabling Developer Mode in Discord → User Settings → Advanced, then right-click your name and Copy User ID.
+
+**3. Invite the bot**
+- Create an OAuth2 URL with `bot` and `applications.commands` scopes
+- Or use a tool like [Discord Invite Generator](https://discordapi.com/permissions.html)
+
+**4. Run**
+
+```bash
+nanobot gateway
+```
+
+**Available Discord commands:**
+- `/start` - Get a welcome message
+- `/help` - Show help information
+- `/reload` - Reload skills and configuration
+- `/stop` - Stop the bot (admin only)
 
 </details>
 
@@ -284,6 +329,12 @@ Config file: `~/.nanobot/config.json`
       "token": "123456:ABC...",
       "allowFrom": ["123456789"]
     },
+    "discord": {
+      "enabled": false,
+      "token": "YOUR_BOT_TOKEN",
+      "allowFrom": [],
+      "adminUsers": ["123456789"]
+    },
     "whatsapp": {
       "enabled": false
     }
@@ -311,6 +362,8 @@ Config file: `~/.nanobot/config.json`
 | `nanobot status` | Show status |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot install-service` | Install as systemd service |
+| `nanobot uninstall-service` | Uninstall systemd service |
 
 <details>
 <summary><b>Scheduled Tasks (Cron)</b></summary>
@@ -325,6 +378,39 @@ nanobot cron list
 
 # Remove a job
 nanobot cron remove <job_id>
+```
+
+</details>
+
+<details>
+<summary><b>systemd Service</b></summary>
+
+Run nanobot as a background service with auto-restart on failure.
+
+**Install as user service**
+
+```bash
+nanobot install-service
+systemctl --user start nanobot
+systemctl --user enable nanobot  # Start on login
+```
+
+**View logs**
+
+```bash
+journalctl --user -u nanobot -f
+```
+
+**Stop the service**
+
+```bash
+systemctl --user stop nanobot
+```
+
+**Uninstall**
+
+```bash
+nanobot uninstall-service
 ```
 
 </details>
@@ -346,7 +432,7 @@ docker run -v ~/.nanobot:/root/.nanobot --rm nanobot onboard
 # Edit config on host to add API keys
 vim ~/.nanobot/config.json
 
-# Run gateway (connects to Telegram/WhatsApp)
+# Run gateway (connects to Telegram/WhatsApp/Discord)
 docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot gateway
 
 # Or run a single command
@@ -383,10 +469,12 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
 - [x] **Voice Transcription** — Support for Groq Whisper (Issue #13)
+- [x] **Discord Integration** — Discord channel with /reload and /stop commands
+- [x] **systemd Service** — Auto-restart on failure
 - [ ] **Multi-modal** — See and hear (images, voice, video)
 - [ ] **Long-term memory** — Never forget important context
 - [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Discord, Slack, email, calendar
+- [ ] **More integrations** — Slack, email, calendar
 - [ ] **Self-improvement** — Learn from feedback and mistakes
 
 ### Contributors

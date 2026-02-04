@@ -24,6 +24,8 @@ class DiscordConfig(BaseModel):
     enabled: bool = False
     token: str = ""  # Bot token from Discord Developer Portal
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
+    admin_users: list[str] = Field(default_factory=list)  # User IDs allowed to use admin commands (/stop)
+    test_guild_id: str = ""  # Optional: sync commands instantly to this guild for testing
 
 
 class ChannelsConfig(BaseModel):

@@ -11,6 +11,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
@@ -55,6 +56,7 @@ class AgentLoop:
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
+        self.skills_loader = SkillsLoader(workspace)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -127,6 +129,34 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def reload_context(self) -> dict[str, Any]:
+        """
+        Reload agent context (skills, configuration).
+
+        Returns:
+            Dict with 'added', 'removed', 'modified' lists of changed skills.
+        """
+        # Rebuild skills summary
+        old_skills = set(self.skills_loader.list_skills(filter_unavailable=False))
+        new_skills = set(self.skills_loader.list_skills(filter_unavailable=False))
+
+        # Find changes
+        added = [s["name"] for s in new_skills if s["name"] not in {old["name"] for old in old_skills}]
+        removed = [s["name"] for s in old_skills if s["name"] not in {new["name"] for new in new_skills}]
+        # For simplicity, we don't detect modifications in this implementation
+        modified = []
+
+        # Rebuild context (will pick up new skills)
+        self.context = ContextBuilder(self.workspace)
+
+        logger.info(f"Reloaded context: added={added}, removed={removed}, modified={modified}")
+
+        return {
+            "added": added,
+            "removed": removed,
+            "modified": modified,
+        }
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """

@@ -1,7 +1,10 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import os
+import signal
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -251,22 +254,65 @@ def gateway(
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
-    
+
+    # Create shutdown event for graceful shutdown
+    shutdown_event = asyncio.Event()
+
+    def signal_handler():
+        """Handle signals for graceful shutdown."""
+        shutdown_event.set()
+
+    # Register signal handlers
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, signal_handler)
+
+    # Set up Discord callbacks if Discord is enabled
+    discord_channel = channels.get_channel("discord")
+    if discord_channel:
+        # Set reload callback
+        def reload_callback() -> dict[str, Any]:
+            return agent.reload_context()
+
+        # Set shutdown callback (triggers graceful shutdown)
+        def shutdown_callback():
+            shutdown_event.set()
+
+        discord_channel.set_reload_callback(reload_callback)
+        discord_channel.set_shutdown_callback(shutdown_callback)
+        console.print("[green]✓[/green] Discord admin commands enabled")
+
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
-            await asyncio.gather(
-                agent.run(),
-                channels.start_all(),
+            # Run agent and channels concurrently with shutdown check
+            agent_task = asyncio.create_task(agent.run())
+            channels_task = asyncio.create_task(channels.start_all())
+
+            # Wait for either shutdown signal or task completion
+            done, pending = await asyncio.wait(
+                [agent_task, channels_task, asyncio.create_task(shutdown_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED
             )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+        finally:
+            console.print("Shutting down...")
             heartbeat.stop()
             cron.stop()
             agent.stop()
             await channels.stop_all()
-    
+
     asyncio.run(run())
 
 
@@ -613,6 +659,139 @@ def cron_run(
         console.print(f"[green]✓[/green] Job executed")
     else:
         console.print(f"[red]Failed to run job {job_id}[/red]")
+
+
+# ============================================================================
+# systemd Service Commands
+# ============================================================================
+
+
+@app.command("install-service")
+def install_service(
+    user: bool = typer.Option(True, "--user", help="Install user service (default)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing service file"),
+):
+    """Install nanobot as a systemd service."""
+    import shutil
+    import subprocess
+
+    from nanobot.config.loader import get_config_path
+
+    # Get service file location
+    pkg_dir = Path(__file__).parent
+    service_file_source = pkg_dir / "systemd" / "nanobot.service"
+
+    if not service_file_source.exists():
+        console.print(f"[red]Service file not found at {service_file_source}[/red]")
+        console.print("This may indicate nanobot was not installed correctly.")
+        raise typer.Exit(1)
+
+    # Determine target directory
+    if user:
+        service_dir = Path.home() / ".config" / "systemd" / "user"
+        service_name = "nanobot.service"
+    else:
+        service_dir = Path("/etc/systemd/system")
+        service_name = "nanobot.service"
+        if not (Path.cwd() == "/" or os.geteuid() == 0):
+            console.print("[yellow]Note: Installing system service requires root privileges.[/yellow]")
+            console.print("Use: sudo nanobot install-service --no-user")
+
+    service_file_target = service_dir / service_name
+
+    # Check if exists
+    if service_file_target.exists() and not force:
+        console.print(f"[yellow]Service file already exists at {service_file_target}[/yellow]")
+        if not typer.confirm("Overwrite?"):
+            console.print("Use --force to overwrite without prompting.")
+            raise typer.Exit()
+
+    # Create directory if needed
+    service_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy service file
+    shutil.copy(service_file_source, service_file_target)
+    console.print(f"[green]✓[/green] Installed service file to {service_file_target}")
+
+    # Reload systemd
+    try:
+        if user:
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+            console.print("[green]✓[/green] Reloaded systemd user daemon")
+        else:
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            console.print("[green]✓[/green] Reloaded systemd daemon")
+
+        # Enable service
+        if user:
+            subprocess.run(["systemctl", "--user", "enable", service_name], check=True)
+            console.print(f"[green]✓[/green] Enabled {service_name}")
+        else:
+            subprocess.run(["systemctl", "enable", service_name], check=True)
+            console.print(f"[green]✓[/green] Enabled {service_name}")
+
+        console.print("\n[dim]To start the service:[/dim]")
+        if user:
+            console.print("  systemctl --user start nanobot")
+            console.print("\n[dim]To view logs:[/dim]")
+            console.print("  journalctl --user -u nanobot -f")
+        else:
+            console.print("  systemctl start nanobot")
+            console.print("\n[dim]To view logs:[/dim]")
+            console.print("  journalctl -u nanobot -f")
+
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error with systemd: {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]systemctl not found. Is systemd installed?[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("uninstall-service")
+def uninstall_service(
+    user: bool = typer.Option(True, "--user", help="Uninstall user service (default)"),
+):
+    """Uninstall nanobot systemd service."""
+    import subprocess
+
+    if user:
+        service_dir = Path.home() / ".config" / "systemd" / "user"
+        service_name = "nanobot.service"
+    else:
+        service_dir = Path("/etc/systemd/system")
+        service_name = "nanobot.service"
+
+    service_file = service_dir / service_name
+
+    if not service_file.exists():
+        console.print(f"[yellow]Service file not found at {service_file}[/yellow]")
+        raise typer.Exit()
+
+    # Stop and disable
+    try:
+        if user:
+            subprocess.run(["systemctl", "--user", "stop", service_name], check=False)
+            subprocess.run(["systemctl", "--user", "disable", service_name], check=True)
+        else:
+            subprocess.run(["systemctl", "stop", service_name], check=False)
+            subprocess.run(["systemctl", "disable", service_name], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Remove file
+    service_file.unlink()
+    console.print(f"[green]✓[/green] Removed {service_file}")
+
+    # Reload systemd
+    try:
+        if user:
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        else:
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+        console.print("[green]✓[/green] Reloaded systemd daemon")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        console.print(f"[yellow]Warning: Could not reload systemd: {e}[/yellow]")
 
 
 # ============================================================================

@@ -1,0 +1,27 @@
+[Unit]
+Description=Nanobot AI Assistant
+Documentation=https://github.com/HKUDS/nanobot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User is set via template instance (%i)
+ExecStart=nanobot gateway
+# Working directory is the user's nanobot config directory
+WorkingDirectory=%h/.nanobot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Auto-restart on failure
+Restart=always
+RestartSec=10
+# Logging
+StandardOutput=journal
+StandardError=journal
+# Security settings
+NoNewPrivileges=true
+# Optional: Limit resources (uncomment if needed)
+# MemoryLimit=512M
+# CPUQuota=50%
+
+[Install]
+WantedBy=default.target
