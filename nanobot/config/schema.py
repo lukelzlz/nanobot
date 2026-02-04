@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -106,10 +107,31 @@ class GitUpdateConfig(BaseModel):
     repos: list[GitRepoConfig] = Field(default_factory=list)
 
 
+class MCPServerConfig(BaseModel):
+    """Configuration for a single MCP server."""
+    name: str = ""
+    transport: str = "stdio"  # "stdio" or "sse"
+    enabled: bool = True
+    command: str | None = None  # For stdio transport
+    args: list[str] = Field(default_factory=list)  # For stdio transport
+    env: dict[str, str] = Field(default_factory=dict)  # Environment variables
+    url: str | None = None  # For SSE transport
+    timeout: int = 30  # Request timeout
+
+
+class MCPConfig(BaseModel):
+    """MCP (Model Context Protocol) configuration."""
+    enabled: bool = False
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+    timeout: int = 30
+    max_retries: int = 3
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 class Config(BaseSettings):
@@ -120,12 +142,12 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     git_update: GitUpdateConfig = Field(default_factory=GitUpdateConfig)
-    
+
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
-    
+
     def get_api_key(self) -> str | None:
         """Get API key in priority order: OpenRouter > Anthropic > OpenAI > Gemini > Zhipu > Groq > vLLM."""
         return (
@@ -138,7 +160,7 @@ class Config(BaseSettings):
             self.providers.vllm.api_key or
             None
         )
-    
+
     def get_api_base(self) -> str | None:
         """Get API base URL if using OpenRouter, Zhipu or vLLM."""
         if self.providers.openrouter.api_key:
@@ -148,7 +170,7 @@ class Config(BaseSettings):
         if self.providers.vllm.api_base:
             return self.providers.vllm.api_base
         return None
-    
+
     class Config:
         env_prefix = "NANOBOT_"
         env_nested_delimiter = "__"
