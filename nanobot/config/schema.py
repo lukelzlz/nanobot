@@ -89,6 +89,23 @@ class ExecToolConfig(BaseModel):
     restrict_to_workspace: bool = False  # If true, block commands accessing paths outside workspace
 
 
+class GitRepoConfig(BaseModel):
+    """Configuration for a single Git repository to auto-update."""
+    path: str = ""  # Path to the repository
+    branch: str = "main"  # Branch to track
+    schedule: str = "0 2 * * *"  # Cron expression (default: 2 AM daily)
+    enabled: bool = True
+    on_update: list[str] = Field(default_factory=list)  # Commands to run after successful update
+    on_conflict: list[str] = Field(default_factory=list)  # Commands to run on conflict
+    notify_on_change: bool = True  # Send notification when updates are applied
+
+
+class GitUpdateConfig(BaseModel):
+    """Git auto-update configuration."""
+    enabled: bool = False
+    repos: list[GitRepoConfig] = Field(default_factory=list)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -102,6 +119,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    git_update: GitUpdateConfig = Field(default_factory=GitUpdateConfig)
     
     @property
     def workspace_path(self) -> Path:

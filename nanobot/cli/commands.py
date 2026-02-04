@@ -169,6 +169,8 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.git_update.service import GitUpdater
+    from nanobot.git_update.types import GitUpdateResult
     
     if verbose:
         import logging
@@ -228,6 +230,18 @@ def gateway(
     
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path, on_job=on_cron_job)
+
+    # Create git update service
+    async def on_git_update(result: GitUpdateResult) -> None:
+        """Handle git update result - optionally notify."""
+        if result.status == "updated":
+            logger.info(f"Git updated: {result.repo_id}, {result.old_commit[:8]}... → {result.new_commit[:8]}...")
+            # You could send notifications here via channels
+        elif result.status == "conflict":
+            logger.warning(f"Git conflict: {result.repo_id} - {result.error}")
+
+    git_store_path = get_data_dir() / "git_update" / "state.json"
+    git_updater = GitUpdater(config, git_store_path, on_update=on_git_update)
     
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
@@ -252,8 +266,12 @@ def gateway(
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-    
+
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
+
+    git_status = git_updater.status()
+    if git_status["enabled"] and git_status["repos"] > 0:
+        console.print(f"[green]✓[/green] Git update: {git_status['repos']} repos")
 
     # Create shutdown event for graceful shutdown
     shutdown_event = asyncio.Event()
@@ -286,6 +304,7 @@ def gateway(
         try:
             await cron.start()
             await heartbeat.start()
+            await git_updater.start()
             # Run agent and channels concurrently with shutdown check
             agent_task = asyncio.create_task(agent.run())
             channels_task = asyncio.create_task(channels.start_all())
@@ -310,6 +329,7 @@ def gateway(
             console.print("Shutting down...")
             heartbeat.stop()
             cron.stop()
+            git_updater.stop()
             agent.stop()
             await channels.stop_all()
 
@@ -659,6 +679,161 @@ def cron_run(
         console.print(f"[green]✓[/green] Job executed")
     else:
         console.print(f"[red]Failed to run job {job_id}[/red]")
+
+
+# ============================================================================
+# Git Update Commands
+# ============================================================================
+
+
+git_app = typer.Typer(help="Manage git auto-update")
+app.add_typer(git_app, name="git")
+
+
+@git_app.command("list")
+def git_list():
+    """List configured git repositories."""
+    import time
+    from nanobot.config.loader import load_config, get_data_dir
+    from nanobot.git_update.service import GitUpdater
+
+    config = load_config()
+
+    if not config.git_update.enabled:
+        console.print("[yellow]Git auto-update is disabled in config.[/yellow]")
+        console.print("Set git_update.enabled = true in ~/.nanobot/config.json")
+        return
+
+    store_path = get_data_dir() / "git_update" / "state.json"
+    updater = GitUpdater(config, store_path)
+
+    repos = updater.list_repos()
+
+    if not repos:
+        console.print("No git repositories configured.")
+        console.print("\n[dim]Add repos in config.json under git_update.repos:[/dim]")
+        console.print('  {"path": "/path/to/repo", "branch": "main", "schedule": "0 2 * * *"}')
+        return
+
+    table = Table(title="Git Auto-Update Repositories")
+    table.add_column("ID", style="cyan")
+    table.add_column("Path")
+    table.add_column("Branch")
+    table.add_column("Schedule")
+    table.add_column("Status")
+    table.add_column("Last Status")
+    table.add_column("Next Run")
+
+    for repo in repos:
+        # Format last status
+        last_status = ""
+        if repo.state.last_status:
+            status_colors = {
+                "ok": "[green]ok[/green]",
+                "error": "[red]error[/red]",
+                "conflict": "[yellow]conflict[/yellow]",
+                "no_change": "[dim]no_change[/dim]",
+            }
+            last_status = status_colors.get(repo.state.last_status, repo.state.last_status)
+
+        # Format next run
+        next_run = ""
+        if repo.state.next_run_at_ms:
+            next_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(repo.state.next_run_at_ms / 1000))
+            next_run = next_time
+        else:
+            next_run = "[dim]--[/dim]"
+
+        enabled = "[green]enabled[/green]" if repo.enabled else "[dim]disabled[/dim]"
+
+        table.add_row(
+            repo.id,
+            repo.path[:40] + "..." if len(repo.path) > 40 else repo.path,
+            repo.branch,
+            repo.schedule,
+            enabled,
+            last_status or "--",
+            next_run,
+        )
+
+    console.print(table)
+
+
+@git_app.command("run")
+def git_run(
+    repo_id: str = typer.Argument(..., help="Repository ID or path to update"),
+):
+    """Manually trigger an update for a repository."""
+    from nanobot.config.loader import load_config, get_data_dir
+    from nanobot.git_update.service import GitUpdater
+
+    config = load_config()
+    store_path = get_data_dir() / "git_update" / "state.json"
+    updater = GitUpdater(config, store_path)
+
+    # Load repos to find the matching one
+    repos = updater.list_repos()
+    target_repo = None
+
+    for repo in repos:
+        if repo.id == repo_id or repo.path == repo_id or repo.path.endswith(repo_id):
+            target_repo = repo
+            break
+
+    if not target_repo:
+        console.print(f"[red]Repository {repo_id} not found[/red]")
+        console.print("[dim]Use 'nanobot git list' to see configured repos.[/dim]")
+        return
+
+    async def run():
+        result = await updater.run_update(target_repo.id)
+        if result is None:
+            console.print(f"[red]Repository {repo_id} not found[/red]")
+            return
+
+        if result.status == "updated":
+            console.print(f"[green]✓[/green] Repository updated")
+            if result.old_commit and result.new_commit:
+                console.print(f"  {result.old_commit[:8]} → {result.new_commit[:8]}")
+            if result.changes:
+                console.print(f"  [dim]{len(result.changes)} new commits[/dim]")
+                for change in result.changes[:5]:
+                    console.print(f"    {change}")
+                if len(result.changes) > 5:
+                    console.print(f"    ... and {len(result.changes) - 5} more")
+        elif result.status == "no_change":
+            console.print("[dim]No changes to pull[/dim]")
+        elif result.status == "conflict":
+            console.print(f"[yellow]Conflict detected[/yellow]")
+            console.print(f"  {result.error}")
+        else:
+            console.print(f"[red]Error: {result.error}[/red]")
+
+    asyncio.run(run())
+
+
+@git_app.command("enable")
+def git_enable(
+    repo_id: str = typer.Argument(..., help="Repository ID or path"),
+    disable: bool = typer.Option(False, "--disable", help="Disable instead of enable"),
+):
+    """Enable or disable auto-update for a repository."""
+    import json
+    from nanobot.config.loader import load_config, save_config, get_config_path
+
+    config = load_config()
+
+    # Find the repo by ID or path
+    for repo_config in config.git_update.repos:
+        if repo_config.path == repo_id or repo_config.path.endswith(repo_id):
+            repo_config.enabled = not disable
+            save_config(config)
+            status = "disabled" if disable else "enabled"
+            console.print(f"[green]✓[/green] Repository {repo_config.path} {status}")
+            return
+
+    console.print(f"[red]Repository {repo_id} not found[/red]")
+    console.print("[dim]Use 'nanobot git list' to see configured repos.[/dim]")
 
 
 # ============================================================================
