@@ -55,10 +55,10 @@ class DiscordChannel(BaseChannel):
             help_command=None,  # We'll provide custom help
         )
 
-        # Register event handlers
-        self._bot.event(self._on_ready)
-        self._bot.event(self._on_message)
-        self._bot.event(self._on_command_error)
+        # Register event handlers using listen() for instance methods
+        self._bot.listen("on_ready")(self._on_ready)
+        self._bot.listen("on_message")(self._on_message)
+        self._bot.listen("on_command_error")(self._on_command_error)
 
         # Register slash commands
         self._bot.tree.command(name="start", description="Start the bot and get a welcome message")(self._slash_start)
