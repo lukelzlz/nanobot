@@ -106,10 +106,9 @@ class LiteLLMProvider(LLMProvider):
             ):
                 model = f"zai/{model}"
 
-        # For vLLM/OpenAI-compatible endpoints, use openai/ prefix
-        # This tells LiteLLM to use OpenAI-compatible API format
-        if self.is_vllm and not model.startswith("openai/"):
-            model = f"openai/{model}"
+        # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
+        if self.is_vllm and not model.startswith("hosted_vllm/"):
+            model = f"hosted_vllm/{model}"
         
         # For Gemini, ensure gemini/ prefix if not already present
         if "gemini" in model.lower() and not model.startswith("gemini/"):
