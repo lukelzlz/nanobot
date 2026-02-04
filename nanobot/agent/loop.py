@@ -3,7 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -21,6 +21,9 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import SessionManager
 
+if TYPE_CHECKING:
+    from nanobot.config.schema import ExecToolConfig, MCPConfig
+
 # Optional MCP support
 try:
     from nanobot.agent.mcp import MCPClient, MCPServerConfig
@@ -32,7 +35,7 @@ except ImportError:
 class AgentLoop:
     """
     The agent loop is the core processing engine.
-    
+
     It:
     1. Receives messages from the bus
     2. Builds context with history, memory, skills
@@ -229,10 +232,10 @@ class AgentLoop:
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a single inbound message.
-        
+
         Args:
             msg: The inbound message to process.
-        
+
         Returns:
             The response message, or None if no response needed.
         """
@@ -324,7 +327,7 @@ class AgentLoop:
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).
-        
+
         The chat_id field contains "original_channel:original_chat_id" to route
         the response back to the correct destination.
         """
@@ -416,11 +419,11 @@ class AgentLoop:
     async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
         """
         Process a message directly (for CLI usage).
-        
+
         Args:
             content: The message content.
             session_key: Session identifier.
-        
+
         Returns:
             The agent's response.
         """

@@ -413,7 +413,6 @@ class SSETransport:
             if "RequestError" in type(e).__name__:
                 raise MCPTransportError(f"Request error: {e}") from e
             raise MCPTransportError(f"Request error: {e}") from e
-            raise MCPTransportError(f"Request error: {e}") from e
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """List available tools from the MCP server."""
