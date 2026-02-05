@@ -219,7 +219,7 @@ class AgentLoop:
         modified = []
 
         # Rebuild context (will pick up new skills)
-        self.context = ContextBuilder(self.workspace)
+        self.context = ContextBuilder(self.workspace, mcp_client=self.mcp_client)
 
         logger.info(f"Reloaded context: added={added}, removed={removed}, modified={modified}")
 
