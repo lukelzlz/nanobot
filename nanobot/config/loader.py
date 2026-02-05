@@ -61,12 +61,18 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
         json.dump(data, f, indent=2)
 
 
-def convert_keys(data: Any) -> Any:
-    """Convert camelCase keys to snake_case for Pydantic."""
+def convert_keys(data: Any, parent_key: str = "") -> Any:
+    """Convert camelCase keys to snake_case for Pydantic.
+
+    Skips conversion for 'env' dicts (environment variables should remain unchanged).
+    """
     if isinstance(data, dict):
-        return {camel_to_snake(k): convert_keys(v) for k, v in data.items()}
+        # Don't convert env dict keys (they're environment variables)
+        if parent_key == "env":
+            return data
+        return {camel_to_snake(k): convert_keys(v, k) for k, v in data.items()}
     if isinstance(data, list):
-        return [convert_keys(item) for item in data]
+        return [convert_keys(item, parent_key) for item in data]
     return data
 
 
