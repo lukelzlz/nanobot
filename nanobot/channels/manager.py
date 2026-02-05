@@ -149,3 +149,22 @@ class ChannelManager:
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
         return list(self.channels.keys())
+
+    async def send_startup_notification(self, message: str) -> None:
+        """Send startup notification to all allowed users across channels."""
+        from nanobot.bus.events import OutboundMessage
+
+        messages = []
+        for name, channel in self.channels.items():
+            # Get allow_from list from channel config
+            allow_list = getattr(channel.config, 'allow_from', [])
+            for chat_id in allow_list:
+                messages.append(OutboundMessage(
+                    channel=name,
+                    chat_id=chat_id,
+                    content=message
+                ))
+
+        # Publish all messages
+        for msg in messages:
+            await self.bus.publish_outbound(msg)
