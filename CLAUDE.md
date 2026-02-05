@@ -25,6 +25,19 @@ pytest tests/test_specific_file.py
 uv build
 ```
 
+## Bot Management
+
+```bash
+# Restart bot (systemd service)
+systemctl restart nanobot
+
+# View bot logs
+journalctl -u nanobot -f
+
+# Check bot status
+systemctl status nanobot
+```
+
 ## Code Style
 
 - **Line length**: 100 characters
