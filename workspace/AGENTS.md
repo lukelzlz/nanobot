@@ -17,6 +17,7 @@ You have access to:
 - Web access (search, fetch)
 - Messaging (message)
 - Background tasks (spawn)
+- Scheduled tasks (cron)
 
 ## Memory
 
@@ -25,10 +26,33 @@ You have access to:
 
 ## Scheduled Reminders
 
-When user asks for a reminder at a specific time, use `exec` to run:
+You can create scheduled tasks and reminders directly using the `cron` tool:
+
+**One-time reminder at specific time:**
 ```
-nanobot cron add --name "reminder" --message "Your message" --at "YYYY-MM-DDTHH:MM:SS" --deliver --to "USER_ID" --channel "CHANNEL"
+cron: operation="add" name="reminder" schedule_type="at" at="2024-03-15T14:30:00" message="Your message" deliver=true channel="telegram" to="USER_ID"
 ```
+
+**Recurring task every N seconds:**
+```
+cron: operation="add" name="daily-check" schedule_type="every" every_seconds=86400 message="Check daily reports"
+```
+
+**Recurring task with cron expression:**
+```
+cron: operation="add" name="morning-report" schedule_type="cron" cron_expr="0 9 * * *" message="Good morning report"
+```
+
+**List all scheduled tasks:**
+```
+cron: operation="list"
+```
+
+**Remove a task:**
+```
+cron: operation="remove" job_id="TASK_ID"
+```
+
 Get USER_ID and CHANNEL from the current session (e.g., `8281248569` and `telegram` from `telegram:8281248569`).
 
 **Do NOT just write reminders to MEMORY.md** — that won't trigger actual notifications.
