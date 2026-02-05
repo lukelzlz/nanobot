@@ -337,6 +337,11 @@ def gateway(
             agent_task = asyncio.create_task(agent.run())
             channels_task = asyncio.create_task(channels.start_all())
 
+            # Give channels time to connect, then send startup notification
+            await asyncio.sleep(1)
+            if config.gateway.startup_notify_enabled:
+                await channels.send_startup_notification(config.gateway.startup_notify_message)
+
             # Wait for either shutdown signal or task completion
             done, pending = await asyncio.wait(
                 [agent_task, channels_task, asyncio.create_task(shutdown_event.wait())],

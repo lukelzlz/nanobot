@@ -71,6 +71,8 @@ class GatewayConfig(BaseModel):
     """Gateway/server configuration."""
     host: str = "0.0.0.0"
     port: int = 18790
+    startup_notify_enabled: bool = True  # Send startup notification to allowed users
+    startup_notify_message: str = "🤖 nanobot is ready!"  # Startup notification message
 
 
 class WebSearchConfig(BaseModel):
