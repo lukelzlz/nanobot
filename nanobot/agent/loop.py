@@ -274,6 +274,7 @@ class AgentLoop:
             history=session.get_history(),
             current_message=msg.content,
             media=msg.media if msg.media else None,
+            supports_vision=self.provider.supports_vision(self.model),
         )
 
         # Agent loop
@@ -370,7 +371,8 @@ class AgentLoop:
         # Build messages with the announce content
         messages = self.context.build_messages(
             history=session.get_history(),
-            current_message=msg.content
+            current_message=msg.content,
+            supports_vision=self.provider.supports_vision(self.model),
         )
 
         # Agent loop (limited for announce handling)

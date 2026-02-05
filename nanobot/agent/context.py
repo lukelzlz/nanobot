@@ -131,6 +131,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         current_message: str,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
+        supports_vision: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -140,6 +141,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             current_message: The new user message.
             skill_names: Optional skills to include.
             media: Optional list of local file paths for images/media.
+            supports_vision: Whether the LLM supports vision input (base64 images).
 
         Returns:
             List of messages including system prompt.
@@ -154,14 +156,30 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         messages.extend(history)
 
         # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media)
+        user_content = self._build_user_content(current_message, media, supports_vision)
         messages.append({"role": "user", "content": user_content})
 
         return messages
 
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+    def _build_user_content(
+        self, text: str, media: list[str] | None, supports_vision: bool = False
+    ) -> str | list[dict[str, Any]]:
+        """
+        Build user message content with optional base64-encoded images.
+
+        Args:
+            text: The user's text message.
+            media: Optional list of local file paths for images/media.
+            supports_vision: Whether to encode images as base64 for vision models.
+
+        Returns:
+            Either a plain string (text only) or a list with image_url blocks.
+        """
         if not media:
+            return text
+
+        # Only encode images if the model supports vision
+        if not supports_vision:
             return text
 
         images = []

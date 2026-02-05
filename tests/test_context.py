@@ -82,8 +82,20 @@ class TestContextBuilder:
         )
         test_image.write_bytes(png_data)
 
-        messages = context_builder.build_messages([], "Check image", media=[str(test_image)])
+        # Without vision support, should return plain text
+        messages = context_builder.build_messages(
+            [], "Check image", media=[str(test_image)], supports_vision=False
+        )
+        assert len(messages) == 2  # system + user with content
+        user_msg = messages[1]
+        assert "content" in user_msg
+        assert isinstance(user_msg["content"], str)
+        assert user_msg["content"] == "Check image"
 
+        # With vision support, should return list with base64 image
+        messages = context_builder.build_messages(
+            [], "Check image", media=[str(test_image)], supports_vision=True
+        )
         assert len(messages) == 2  # system + user with content
         user_msg = messages[1]
         assert "content" in user_msg
@@ -225,6 +237,10 @@ class TestContextBuilder:
         text_file = context_builder.workspace / "test.txt"
         text_file.write_text("Not an image")
 
-        result = context_builder._build_user_content("Test", [str(text_file)])
-        # Should return text only since file is not an image
-        assert "Test" in result
+        # Without vision support, should just return text
+        result = context_builder._build_user_content("Test", [str(text_file)], supports_vision=False)
+        assert result == "Test"
+
+        # With vision support but non-image file, should still return text
+        result = context_builder._build_user_content("Test", [str(text_file)], supports_vision=True)
+        assert result == "Test"

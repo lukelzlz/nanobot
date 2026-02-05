@@ -39,6 +39,18 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.api_base = api_base
 
+    def supports_vision(self, model: str | None = None) -> bool:
+        """
+        Check if this provider supports vision (image) input for the given model.
+
+        Args:
+            model: Optional model identifier to check. If None, uses default model.
+
+        Returns:
+            True if the model supports vision input, False otherwise.
+        """
+        return False
+
     @abstractmethod
     async def chat(
         self,

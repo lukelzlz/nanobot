@@ -70,6 +70,68 @@ class LiteLLMProvider(LLMProvider):
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
 
+    def supports_vision(self, model: str | None = None) -> bool:
+        """
+        Check if the model supports vision (image) input.
+
+        Models that support vision:
+        - Claude 3.5+ (claude-sonnet-4, claude-opus-4, claude-3-5-*)
+        - GPT-4o, GPT-4o-mini, gpt-4.1
+        - Gemini 2.0 Flash, Gemini 1.5 Pro
+        - Llama 3.2 Vision (llama-3.2-90b-vision)
+        - Grok-2-vision
+        - Qwen 2.5 VL (qwen-2.5-72b-instruct)
+
+        Args:
+            model: Optional model identifier. If None, uses default model.
+
+        Returns:
+            True if the model supports vision input.
+        """
+        model = model or self.default_model
+        model_lower = model.lower()
+
+        # Claude 3.5+ and 4.x support vision
+        if "claude" in model_lower:
+            vision_models = {
+                "claude-sonnet-4", "claude-opus-4",
+                "claude-3-5-sonnet", "claude-3-5-haiku",
+                "claude-sonnet-4.5", "claude-sonnet-4-20250514",
+            }
+            return any(pattern in model_lower for pattern in vision_models)
+
+        # GPT-4o and GPT-4.1 support vision
+        if "gpt" in model_lower:
+            vision_models = {
+                "gpt-4o", "gpt-4o-mini",
+                "gpt-4.1", "gpt-4-turbo",
+                "chatgpt-4o", "chatgpt-4o-latest",
+            }
+            return any(pattern in model_lower for pattern in vision_models)
+
+        # Gemini 2.0 Flash and 1.5 Pro support vision
+        if "gemini" in model_lower:
+            return "2.0-flash" in model_lower or "1.5" in model_lower
+
+        # Llama 3.2 Vision
+        if "llama" in model_lower and "vision" in model_lower:
+            return True
+
+        # Grok-2-vision
+        if "grok" in model_lower and "vision" in model_lower:
+            return True
+
+        # Qwen 2.5 VL (Vision Language)
+        if "qwen" in model_lower and ("vl" in model_lower or "vision" in model_lower):
+            return True
+
+        # OpenRouter: check if model name contains vision keywords
+        if self.is_openrouter:
+            vision_keywords = ["vision", "vl", "visual", "claude-3", "claude-4", "gpt-4o"]
+            return any(kw in model_lower for kw in vision_keywords)
+
+        return False
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
