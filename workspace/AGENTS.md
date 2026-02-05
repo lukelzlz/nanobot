@@ -26,7 +26,9 @@ You have access to:
 
 ## Scheduled Reminders
 
-You can create scheduled tasks and reminders directly using the `cron` tool:
+You can create scheduled tasks and reminders directly using the `cron` tool.
+
+**Important:** Cron tasks run with full agent capabilities — you CAN use tools like `read_file`, `web_search`, and `message` within cron tasks.
 
 **One-time reminder at specific time:**
 ```
@@ -43,6 +45,11 @@ cron: operation="add" name="daily-check" schedule_type="every" every_seconds=864
 cron: operation="add" name="morning-report" schedule_type="cron" cron_expr="0 9 * * *" message="Good morning report"
 ```
 
+**Cron task that uses tools and sends messages:**
+```
+cron: operation="add" name="daily-weather" schedule_type="every" every_seconds=86400 message="Check weather at weather.com, then send me a report with the message tool" channel="telegram" to="USER_ID"
+```
+
 **List all scheduled tasks:**
 ```
 cron: operation="list"
@@ -56,6 +63,13 @@ cron: operation="remove" job_id="TASK_ID"
 Get USER_ID and CHANNEL from the current session (e.g., `8281248569` and `telegram` from `telegram:8281248569`).
 
 **Do NOT just write reminders to MEMORY.md** — that won't trigger actual notifications.
+
+### Cron Task Message Delivery
+
+When you create a cron task with `channel` and `to` parameters:
+1. The `message` tool will automatically use those as the default target
+2. You can call `message(content="...")` without specifying channel/chat_id
+3. The final response will be delivered if `deliver=true` is set
 
 ## Heartbeat Tasks
 
