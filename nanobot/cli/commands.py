@@ -216,16 +216,22 @@ def gateway(
     # Create cron service
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        # Use job's channel/to as default context for message tool
+        target_channel = job.payload.channel or "whatsapp"
+        target_chat_id = job.payload.to or "cron"
+
         response = await agent.process_direct(
             job.payload.message,
-            session_key=f"cron:{job.id}"
+            session_key=f"cron:{job.id}",
+            channel=target_channel,
+            chat_id=target_chat_id,
         )
         # Optionally deliver to channel
         if job.payload.deliver and job.payload.to:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "whatsapp",
-                chat_id=job.payload.to,
+                channel=target_channel,
+                chat_id=target_chat_id,
                 content=response or ""
             ))
         return response
