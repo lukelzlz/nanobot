@@ -6,11 +6,11 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from loguru import logger
 
-from nanobot.config.schema import Config, GitRepoConfig
+from nanobot.config.schema import Config
 from nanobot.git_update.types import GitRepo, GitRepoState, GitUpdateResult
 
 

@@ -328,7 +328,7 @@ class DiscordChannel(BaseChannel):
 
             except Exception as e:
                 logger.error(f"Failed to download attachment {attachment.id}: {e}")
-                content_parts.append(f"[attachment: download failed]")
+                content_parts.append("[attachment: download failed]")
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
 
