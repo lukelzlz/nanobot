@@ -10,6 +10,7 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -114,6 +115,11 @@ class AgentLoop:
         # Spawn tool (for subagents)
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
+
+        # Cron tool
+        from nanobot.config.loader import get_data_dir
+        cron_store_path = get_data_dir() / "cron" / "jobs.json"
+        self.tools.register(CronTool(cron_store_path))
 
     async def _register_mcp_tools(self) -> None:
         """Register tools from MCP servers."""
