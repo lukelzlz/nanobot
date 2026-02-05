@@ -1,13 +1,10 @@
 """Tests for MCP integration."""
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.agent.mcp import MCPClient, MCPServerConfig
-from nanobot.agent.mcp.transports import MCPTransportError
 
 
 @pytest.fixture
@@ -327,7 +324,7 @@ class TestMCPConfigSchema:
 
     def test_mcp_config_defaults(self):
         """Test default MCP config values."""
-        from nanobot.config.schema import MCPConfig, MCPServerConfig
+        from nanobot.config.schema import MCPConfig
 
         config = MCPConfig()
         assert config.enabled is False

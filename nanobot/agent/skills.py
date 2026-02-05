@@ -303,15 +303,16 @@ class SkillsLoader:
                             break
                     result[key] = items
 
+                # Handle inline list syntax (e.g., mcp_servers: [item1, item2])
+                elif key == "mcp_servers" and value.startswith("["):
+                    result[key] = self._parse_list_value(value)
+
                 # Handle environment dictionary syntax (ENV_VAR: value)
                 elif "=" in value or (key in ("env", "requires", "metadata") and any(k in yaml_str for k in ["bins", "env"])):
                     # Try to parse as nested structure
                     if key == "requires":
                         # Parse requires section
                         result[key] = self._parse_requires_section(yaml_str)
-                    elif key == "mcp_servers" and value.startswith("["):
-                        # Parse list syntax
-                        result[key] = self._parse_list_value(value)
                     elif key == "type":
                         result[key] = value
                     else:
