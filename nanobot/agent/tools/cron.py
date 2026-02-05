@@ -231,13 +231,18 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
         if schedule.kind == "at":
             return f"at {self._format_datetime(schedule.at_ms)}"
         elif schedule.kind == "every":
-            secs = schedule.every_ms or 0
+            ms = schedule.every_ms if schedule.every_ms else 0
+            secs = ms / 1000  # Convert to seconds for display logic
             if secs < 60:
-                return f"every {secs}s"
+                return f"every {int(secs)}s"
             elif secs < 3600:
-                return f"every {secs // 60}m"
+                return f"every {int(secs // 60)}m"
             else:
-                return f"every {secs // 3600}h {secs % 3600 // 60}m"
+                hours = int(secs // 3600)
+                mins = int((secs % 3600) // 60)
+                if mins > 0:
+                    return f"every {hours}h {mins}m"
+                return f"every {hours}h"
         elif schedule.kind == "cron":
             return schedule.expr or "cron"
         return schedule.kind
