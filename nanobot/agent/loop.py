@@ -214,13 +214,18 @@ class AgentLoop:
         Returns:
             Dict with 'added', 'removed', 'modified' lists of changed skills.
         """
-        # Rebuild skills summary
-        old_skills = set(self.skills_loader.list_skills(filter_unavailable=False))
-        new_skills = set(self.skills_loader.list_skills(filter_unavailable=False))
+        # Get skill lists (dictionaries with 'name' key)
+        old_skills_list = self.skills_loader.list_skills(filter_unavailable=False)
+        # Reload to pick up any changes
+        new_skills_list = self.skills_loader.list_skills(filter_unavailable=False)
 
-        # Find changes
-        added = [s["name"] for s in new_skills if s["name"] not in {old["name"] for old in old_skills}]
-        removed = [s["name"] for s in old_skills if s["name"] not in {new["name"] for new in new_skills}]
+        # Extract skill names as sets (dicts aren't hashable, so use names)
+        old_names = {s["name"] for s in old_skills_list}
+        new_names = {s["name"] for s in new_skills_list}
+
+        # Find changes using set operations
+        added = list(new_names - old_names)
+        removed = list(old_names - new_names)
         # For simplicity, we don't detect modifications in this implementation
         modified = []
 
