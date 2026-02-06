@@ -5,6 +5,8 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
@@ -14,6 +16,12 @@ try:
 except ImportError:
     MCP_AVAILABLE = False
     MCPClient = None  # type: ignore
+
+# Optional auto-summary support
+try:
+    from nanobot.agent.summary import ConversationSummarizer
+except ImportError:
+    ConversationSummarizer = None  # type: ignore
 
 
 class ContextBuilder:
@@ -26,11 +34,19 @@ class ContextBuilder:
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
 
-    def __init__(self, workspace: Path, mcp_client: "MCPClient | None" = None):  # type: ignore
+    def __init__(
+        self,
+        workspace: Path,
+        mcp_client: "MCPClient | None" = None,  # type: ignore
+        auto_summary_config: dict[str, Any] | None = None,
+    ):  # type: ignore
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self.mcp_client = mcp_client
+        self.auto_summary_config = auto_summary_config or {}
+        self._summarizer: ConversationSummarizer | None = None
+        self._summarizing_sessions: set[str] = set()  # Concurrency protection
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
@@ -125,13 +141,120 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
 
         return "\n\n".join(parts) if parts else ""
 
-    def build_messages(
+    def set_summarizer(self, summarizer: "ConversationSummarizer | None") -> None:  # type: ignore
+        """Set the conversation summarizer instance."""
+        self._summarizer = summarizer
+
+    def set_auto_summary_config(self, config: dict[str, Any] | None) -> None:  # type: ignore
+        """Update auto-summary configuration."""
+        self.auto_summary_config = config or {}
+
+    async def _maybe_summarize(
+        self,
+        history: list[dict[str, Any]],
+        session_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Check if history needs summarization and apply if needed.
+
+        Args:
+            history: Conversation history messages.
+            session_key: Optional session key for concurrency protection.
+
+        Returns:
+            Processed history (summarized if needed).
+        """
+        if not self.auto_summary_config.get("enabled", False):
+            return history
+
+        if self._summarizer is None:
+            logger.warning("[summary] Config enabled but no summarizer available")
+            return history
+
+        # Concurrency protection
+        if session_key and session_key in self._summarizing_sessions:
+            logger.debug(f"[summary] Session {session_key} already being summarized")
+            return history
+
+        threshold_low = self.auto_summary_config.get("threshold_low", 3000)
+        threshold_high = self.auto_summary_config.get("threshold_high", 4000)
+
+        if not self._summarizer.should_summarize(history, threshold_low, threshold_high):
+            return history
+
+        # Lock session
+        if session_key:
+            self._summarizing_sessions.add(session_key)
+
+        try:
+            # Calculate tail retention
+            t1, t2 = self._summarizer._calculate_thresholds(
+                threshold_low, threshold_high
+            )
+
+            # Find messages to compress (those beyond T1 tail)
+            tail_tokens = 0
+            preserved_indices = []
+            for i in range(len(history) - 1, -1, -1):
+                content = self._summarizer._clean_message_content(history[i], for_tail=True)
+                if not content:
+                    continue
+                msg_len = self._summarizer._estimate_tokens(content)
+                if tail_tokens + msg_len > t1:
+                    break
+                tail_tokens += msg_len
+                preserved_indices.append(i)
+
+            preserved_indices.reverse()
+            preserved_set = set(preserved_indices)
+
+            # Messages to compress
+            compress_indices = [
+                i for i, m in enumerate(history)
+                if m.get("role") != "tool" and i not in preserved_set
+            ]
+
+            if not compress_indices:
+                return history
+
+            # Generate summary
+            target_length = self.auto_summary_config.get("target_length", 300)
+            budget_tokens = max(50, t2 - tail_tokens)
+            prompt = self.auto_summary_config.get(
+                "prompt",
+                "請根據對話歷史生成結構化摘要，提取要點、當前狀態與未完成事項。"
+            )
+
+            summary = await self._summarizer.summarize(
+                [history[i] for i in compress_indices],
+                prompt,
+                target_length,
+                budget_tokens,
+            )
+
+            if summary:
+                new_history = self._summarizer.apply_summary(history, summary, t1)
+                logger.info(
+                    f"[summary] Compressed {len(history)} -> {len(new_history)} messages"
+                )
+                return new_history
+            else:
+                # Fallback: truncate to tail
+                logger.warning("[summary] Generation failed, using truncation fallback")
+                return self._summarizer.truncate_to_tail(history, t1)
+
+        finally:
+            if session_key:
+                self._summarizing_sessions.discard(session_key)
+
+    async def build_messages(
         self,
         history: list[dict[str, Any]],
         current_message: str,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
         supports_vision: bool = False,
+        session_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -142,6 +265,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             skill_names: Optional skills to include.
             media: Optional list of local file paths for images/media.
             supports_vision: Whether the LLM supports vision input (base64 images).
+            session_key: Optional session key for summary concurrency protection.
 
         Returns:
             List of messages including system prompt.
@@ -152,8 +276,11 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         system_prompt = self.build_system_prompt(skill_names)
         messages.append({"role": "system", "content": system_prompt})
 
+        # Apply summarization if needed
+        processed_history = await self._maybe_summarize(history, session_key)
+
         # History
-        messages.extend(history)
+        messages.extend(processed_history)
 
         # Current message (with optional image attachments)
         user_content = self._build_user_content(current_message, media, supports_vision)

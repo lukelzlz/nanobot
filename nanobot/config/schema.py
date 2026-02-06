@@ -36,6 +36,15 @@ class ChannelsConfig(BaseModel):
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
 
 
+class AutoSummaryConfig(BaseModel):
+    """Auto-summary configuration for conversation compression."""
+    enabled: bool = True  # Enable automatic summarization
+    threshold_low: int = 3000  # T1: retain recent N tokens
+    threshold_high: int = 4000  # T2: trigger summarization when exceeding this
+    target_length: int = 300  # Target summary length in tokens
+    prompt: str = "請根據對話歷史生成結構化摘要，提取要點、當前狀態與未完成事項。確保準確、簡潔、可延續。不要輸出 JSON 或代碼塊。"
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
@@ -43,6 +52,7 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    auto_summary: AutoSummaryConfig = Field(default_factory=AutoSummaryConfig)
 
 
 class AgentsConfig(BaseModel):

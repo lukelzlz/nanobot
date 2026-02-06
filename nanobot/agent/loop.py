@@ -32,6 +32,14 @@ try:
 except ImportError:
     MCP_AVAILABLE = False
 
+# Optional auto-summary support
+try:
+    from nanobot.agent.summary import ConversationSummarizer
+    SUMMARY_AVAILABLE = True
+except ImportError:
+    ConversationSummarizer = None  # type: ignore
+    SUMMARY_AVAILABLE = False
+
 
 class AgentLoop:
     """
@@ -55,6 +63,7 @@ class AgentLoop:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         mcp_config: "MCPConfig | None" = None,
+        auto_summary_config: dict[str, Any] | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig, MCPConfig
         self.bus = bus
@@ -66,13 +75,18 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.mcp_config: MCPConfig | None = None
         self.mcp_client: MCPClient | None = None
+        self.auto_summary_config = auto_summary_config or {}
 
         # Initialize MCP client if available and enabled
         if MCP_AVAILABLE and mcp_config and mcp_config.enabled:
             self.mcp_client = MCPClient(mcp_config)
             self.mcp_config = mcp_config
 
-        self.context = ContextBuilder(workspace, mcp_client=self.mcp_client)
+        self.context = ContextBuilder(
+            workspace,
+            mcp_client=self.mcp_client,
+            auto_summary_config=self.auto_summary_config,
+        )
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
         self.skills_loader = SkillsLoader(workspace)
@@ -88,6 +102,31 @@ class AgentLoop:
 
         self._running = False
         self._register_default_tools()
+        self._init_summarizer()
+
+    def _init_summarizer(self) -> None:
+        """Initialize the conversation summarizer if enabled."""
+        if not SUMMARY_AVAILABLE:
+            return
+
+        if not self.auto_summary_config.get("enabled", False):
+            logger.debug("[agent] Auto-summary disabled")
+            return
+
+        try:
+            self._summarizer = ConversationSummarizer(
+                provider=self.provider,
+                model=self.model,
+            )
+            self.context.set_summarizer(self._summarizer)
+            logger.info(
+                f"[agent] Auto-summary enabled: "
+                f"T1={self.auto_summary_config.get('threshold_low', 3000)}, "
+                f"T2={self.auto_summary_config.get('threshold_high', 4000)}"
+            )
+        except Exception as e:
+            logger.warning(f"[agent] Failed to initialize summarizer: {e}")
+        self._init_summarizer()
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -230,7 +269,14 @@ class AgentLoop:
         modified = []
 
         # Rebuild context (will pick up new skills)
-        self.context = ContextBuilder(self.workspace, mcp_client=self.mcp_client)
+        self.context = ContextBuilder(
+            self.workspace,
+            mcp_client=self.mcp_client,
+            auto_summary_config=self.auto_summary_config,
+        )
+
+        # Re-initialize summarizer
+        self._init_summarizer()
 
         logger.info(f"Reloaded context: added={added}, removed={removed}, modified={modified}")
 
@@ -270,11 +316,12 @@ class AgentLoop:
             spawn_tool.set_context(msg.channel, msg.chat_id)
 
         # Build initial messages (use get_history for LLM-formatted messages)
-        messages = self.context.build_messages(
+        messages = await self.context.build_messages(
             history=session.get_history(),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             supports_vision=self.provider.supports_vision(self.model),
+            session_key=msg.session_key,
         )
 
         # Agent loop
@@ -369,10 +416,11 @@ class AgentLoop:
             spawn_tool.set_context(origin_channel, origin_chat_id)
 
         # Build messages with the announce content
-        messages = self.context.build_messages(
+        messages = await self.context.build_messages(
             history=session.get_history(),
             current_message=msg.content,
             supports_vision=self.provider.supports_vision(self.model),
+            session_key=session_key,
         )
 
         # Agent loop (limited for announce handling)
