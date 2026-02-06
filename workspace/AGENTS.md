@@ -26,6 +26,16 @@ You have access to:
 
 ## Scheduled Reminders
 
+> **⚠️ CRITICAL: Message Delivery in Cron Tasks**
+>
+> Cron tasks run without a direct user session context. To send messages to the user:
+> - You **MUST use the `message` tool** — simply returning text will NOT reach the user
+> - The `message` tool automatically uses `channel` and `to` parameters from the cron job as defaults
+> - This is the ONLY reliable way to ensure your message is delivered
+>
+> ❌ WRONG: Just returning text response
+> ✅ CORRECT: Call `message(content="your message here")`
+
 You can create scheduled tasks and reminders directly using the `cron` tool.
 
 **Important:** Cron tasks run with full agent capabilities — you CAN use tools like `read_file`, `web_search`, and `message` within cron tasks.

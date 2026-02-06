@@ -83,10 +83,33 @@ web_fetch(url: str, extractMode: str = "markdown", maxChars: int = 50000) -> str
 
 ### message
 
-Send a message to the user (used internally).
+Send a message to a specific chat channel.
 
 ```py
 message(content: str, channel: str = None, chat_id: str = None) -> str
+```
+
+**Parameters:**
+- `content` - The message text to send
+- `channel` - Target channel (telegram, discord, whatsapp)
+- `chat_id` - Target recipient's chat ID or phone number
+
+**Usage Notes:**
+
+- **Normal conversation**: Do NOT use this tool — just respond with text
+- **Cron/Heartbeat tasks**: You MUST use this tool to send messages
+  - Cron tasks have no direct session context
+  - Returning text alone will NOT reach the user
+  - Always call `message(content="...")` to ensure delivery
+
+**Examples:**
+
+```python
+# In a cron task - REQUIRED
+message(content="Daily report: All systems operational")
+
+# When channel/chat_id are set in cron job, defaults are used:
+message(content="Your reminder message")
 ```
 
 ## Background Tasks
