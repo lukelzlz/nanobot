@@ -130,11 +130,24 @@ class AgentLoop:
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
-        # File tools
-        self.tools.register(ReadFileTool())
-        self.tools.register(WriteFileTool())
-        self.tools.register(EditFileTool())
-        self.tools.register(ListDirTool())
+        # File tools (with workspace restriction if configured)
+        restrict = self.exec_config.restrict_to_workspace
+        self.tools.register(ReadFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        self.tools.register(WriteFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        self.tools.register(EditFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        self.tools.register(ListDirTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
 
         # Shell tool
         self.tools.register(ExecTool(

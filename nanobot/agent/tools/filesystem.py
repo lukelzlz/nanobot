@@ -6,8 +6,59 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 
 
+def _validate_path_safety(
+    file_path: Path,
+    workspace: Path | None = None,
+    allow_absolute: bool = False,
+) -> tuple[bool, str]:
+    """
+    Validate that a path is safe for file operations.
+
+    Args:
+        file_path: The path to validate (should be resolved)
+        workspace: Optional workspace path to restrict access to
+        allow_absolute: Whether to allow absolute paths outside workspace
+
+    Returns:
+        Tuple of (is_safe, error_message)
+    """
+    # Check for path traversal patterns in the original path string
+    path_str = str(file_path)
+    if "../" in path_str or "..\\" in path_str:
+        return False, "Error: Path traversal detected (../ or ..\\ not allowed)"
+
+    # If workspace is specified, ensure path is within workspace
+    if workspace is not None:
+        workspace_resolved = workspace.resolve()
+
+        # For relative paths, resolve them relative to workspace
+        if not file_path.is_absolute():
+            resolved_path = (workspace_resolved / file_path).resolve()
+        else:
+            resolved_path = file_path.resolve()
+
+        try:
+            # Check if resolved path is within workspace
+            resolved_path.relative_to(workspace_resolved)
+        except ValueError:
+            return False, f"Error: Path outside workspace not allowed: {resolved_path}"
+
+    return True, ""
+
+
 class ReadFileTool(Tool):
     """Tool to read file contents."""
+
+    def __init__(self, workspace: Path | None = None, restrict_to_workspace: bool = False):
+        """
+        Initialize ReadFileTool.
+
+        Args:
+            workspace: Workspace path to restrict file operations to
+            restrict_to_workspace: Whether to enforce workspace boundary
+        """
+        self.workspace = workspace
+        self.restrict_to_workspace = restrict_to_workspace
 
     @property
     def name(self) -> str:
@@ -33,6 +84,17 @@ class ReadFileTool(Tool):
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
             file_path = Path(path).expanduser()
+
+            # For relative paths with workspace restriction, resolve relative to workspace
+            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
+                file_path = self.workspace / file_path
+
+            # Validate path safety
+            if self.restrict_to_workspace and self.workspace:
+                is_safe, error = _validate_path_safety(file_path, self.workspace)
+                if not is_safe:
+                    return error
+
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -48,6 +110,19 @@ class ReadFileTool(Tool):
 
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
+
+    def __init__(self, workspace: Path | None = None, restrict_to_workspace: bool = False, max_size: int = 10_000_000):
+        """
+        Initialize WriteFileTool.
+
+        Args:
+            workspace: Workspace path to restrict file operations to
+            restrict_to_workspace: Whether to enforce workspace boundary
+            max_size: Maximum file size in bytes (default 10MB)
+        """
+        self.workspace = workspace
+        self.restrict_to_workspace = restrict_to_workspace
+        self.max_size = max_size
 
     @property
     def name(self) -> str:
@@ -76,10 +151,26 @@ class WriteFileTool(Tool):
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
+            # Check content size
+            content_size = len(content.encode('utf-8'))
+            if content_size > self.max_size:
+                return f"Error: Content too large ({content_size} bytes, max {self.max_size})"
+
             file_path = Path(path).expanduser()
+
+            # For relative paths with workspace restriction, resolve relative to workspace
+            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
+                file_path = self.workspace / file_path
+
+            # Validate path safety (check parent directory)
+            if self.restrict_to_workspace and self.workspace:
+                is_safe, error = _validate_path_safety(file_path.parent, self.workspace)
+                if not is_safe:
+                    return error
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return f"Successfully wrote {len(content)} bytes to {path}"
+            return f"Successfully wrote {content_size} bytes to {path}"
         except PermissionError:
             return f"Error: Permission denied: {path}"
         except Exception as e:
@@ -88,6 +179,17 @@ class WriteFileTool(Tool):
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
+
+    def __init__(self, workspace: Path | None = None, restrict_to_workspace: bool = False):
+        """
+        Initialize EditFileTool.
+
+        Args:
+            workspace: Workspace path to restrict file operations to
+            restrict_to_workspace: Whether to enforce workspace boundary
+        """
+        self.workspace = workspace
+        self.restrict_to_workspace = restrict_to_workspace
 
     @property
     def name(self) -> str:
@@ -121,6 +223,17 @@ class EditFileTool(Tool):
     async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
             file_path = Path(path).expanduser()
+
+            # For relative paths with workspace restriction, resolve relative to workspace
+            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
+                file_path = self.workspace / file_path
+
+            # Validate path safety
+            if self.restrict_to_workspace and self.workspace:
+                is_safe, error = _validate_path_safety(file_path, self.workspace)
+                if not is_safe:
+                    return error
+
             if not file_path.exists():
                 return f"Error: File not found: {path}"
 
@@ -147,6 +260,17 @@ class EditFileTool(Tool):
 class ListDirTool(Tool):
     """Tool to list directory contents."""
 
+    def __init__(self, workspace: Path | None = None, restrict_to_workspace: bool = False):
+        """
+        Initialize ListDirTool.
+
+        Args:
+            workspace: Workspace path to restrict file operations to
+            restrict_to_workspace: Whether to enforce workspace boundary
+        """
+        self.workspace = workspace
+        self.restrict_to_workspace = restrict_to_workspace
+
     @property
     def name(self) -> str:
         return "list_dir"
@@ -171,6 +295,17 @@ class ListDirTool(Tool):
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
             dir_path = Path(path).expanduser()
+
+            # For relative paths with workspace restriction, resolve relative to workspace
+            if self.restrict_to_workspace and self.workspace and not dir_path.is_absolute():
+                dir_path = self.workspace / dir_path
+
+            # Validate path safety
+            if self.restrict_to_workspace and self.workspace:
+                is_safe, error = _validate_path_safety(dir_path, self.workspace)
+                if not is_safe:
+                    return error
+
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():

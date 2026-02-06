@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.agent.tools.filesystem import ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
@@ -99,9 +99,23 @@ class SubagentManager:
         try:
             # Build subagent tools (no message tool, no spawn tool)
             tools = ToolRegistry()
-            tools.register(ReadFileTool())
-            tools.register(WriteFileTool())
-            tools.register(ListDirTool())
+            restrict = self.exec_config.restrict_to_workspace
+            tools.register(ReadFileTool(
+                workspace=self.workspace if restrict else None,
+                restrict_to_workspace=restrict,
+            ))
+            tools.register(WriteFileTool(
+                workspace=self.workspace if restrict else None,
+                restrict_to_workspace=restrict,
+            ))
+            tools.register(EditFileTool(
+                workspace=self.workspace if restrict else None,
+                restrict_to_workspace=restrict,
+            ))
+            tools.register(ListDirTool(
+                workspace=self.workspace if restrict else None,
+                restrict_to_workspace=restrict,
+            ))
             tools.register(ExecTool(
                 working_dir=str(self.workspace),
                 timeout=self.exec_config.timeout,

@@ -52,7 +52,7 @@ class TestContextBuilder:
         prompt = context_builder.build_system_prompt()
         assert str(context_builder.workspace) in prompt
 
-    def test_build_messages(self, context_builder: ContextBuilder):
+    async def test_build_messages(self, context_builder: ContextBuilder):
         """Test building message list."""
         history = [
             {"role": "user", "content": "Hello"},
@@ -60,7 +60,7 @@ class TestContextBuilder:
         ]
         current = "How are you?"
 
-        messages = context_builder.build_messages(history, current)
+        messages = await context_builder.build_messages(history, current)
 
         # Should have system prompt + history + current message
         assert len(messages) == 4
@@ -70,7 +70,7 @@ class TestContextBuilder:
         assert messages[3]["role"] == "user"
         assert messages[3]["content"] == current
 
-    def test_build_messages_with_media(self, context_builder: ContextBuilder):
+    async def test_build_messages_with_media(self, context_builder: ContextBuilder):
         """Test building messages with media attachments."""
         # Create a test image
         import base64
@@ -83,7 +83,7 @@ class TestContextBuilder:
         test_image.write_bytes(png_data)
 
         # Without vision support, should return plain text
-        messages = context_builder.build_messages(
+        messages = await context_builder.build_messages(
             [], "Check image", media=[str(test_image)], supports_vision=False
         )
         assert len(messages) == 2  # system + user with content
@@ -93,7 +93,7 @@ class TestContextBuilder:
         assert user_msg["content"] == "Check image"
 
         # With vision support, should return list with base64 image
-        messages = context_builder.build_messages(
+        messages = await context_builder.build_messages(
             [], "Check image", media=[str(test_image)], supports_vision=True
         )
         assert len(messages) == 2  # system + user with content
@@ -219,9 +219,9 @@ class TestContextBuilder:
         # Should include MCP status in skills summary
         # (the actual format depends on implementation)
 
-    def test_build_messages_empty_history(self, context_builder: ContextBuilder):
+    async def test_build_messages_empty_history(self, context_builder: ContextBuilder):
         """Test building messages with empty history."""
-        messages = context_builder.build_messages([], "Hello")
+        messages = await context_builder.build_messages([], "Hello")
 
         assert len(messages) == 2  # system + user
         assert messages[1]["content"] == "Hello"
