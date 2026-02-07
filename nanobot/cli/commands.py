@@ -272,13 +272,19 @@ def gateway(
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
 
-    # Get cron status (async call)
-    async def get_cron_status():
-        return await cron.status()
+    # Get cron job count - read directly from file to avoid async issues
+    cron_store_path = get_data_dir() / "cron" / "jobs.json"
+    cron_job_count = 0
+    if cron_store_path.exists():
+        import json
+        try:
+            data = json.loads(cron_store_path.read_text())
+            cron_job_count = len(data.get("jobs", []))
+        except Exception:
+            pass
 
-    cron_status = asyncio.run(get_cron_status())
-    if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
+    if cron_job_count > 0:
+        console.print(f"[green]✓[/green] Cron: {cron_job_count} scheduled jobs")
 
     console.print("[green]✓[/green] Heartbeat: every 30m")
 
