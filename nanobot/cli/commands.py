@@ -272,7 +272,11 @@ def gateway(
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
 
-    cron_status = cron.status()
+    # Get cron status (async call)
+    async def get_cron_status():
+        return await cron.status()
+
+    cron_status = asyncio.run(get_cron_status())
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
