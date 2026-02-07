@@ -5,6 +5,53 @@ from typing import Any
 
 from loguru import logger
 
+
+async def _retry_with_backoff(
+    func,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+) -> Any:
+    """
+    Execute a function with exponential backoff retry.
+
+    Args:
+        func: Async function to execute.
+        max_retries: Maximum number of retry attempts.
+        base_delay: Initial delay in seconds.
+        max_delay: Maximum delay in seconds.
+
+    Returns:
+        The result of the function call.
+
+    Raises:
+        The last exception if all retries fail.
+    """
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            return await func()
+        except Exception as e:
+            last_error = e
+            is_last = attempt == max_retries - 1
+
+            if is_last:
+                logger.error(f"Retry failed after {max_retries} attempts: {e}")
+                raise
+
+            # Calculate delay with exponential backoff
+            delay = min(base_delay * (2 ** attempt), max_delay)
+            logger.warning(
+                f"Attempt {attempt + 1}/{max_retries} failed: {e}. "
+                f"Retrying in {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+
+    # Should not reach here, but just in case
+    if last_error:
+        raise last_error
+
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
@@ -107,7 +154,7 @@ class ChannelManager:
                 logger.error(f"Error stopping {name}: {e}")
 
     async def _dispatch_outbound(self) -> None:
-        """Dispatch outbound messages to the appropriate channel."""
+        """Dispatch outbound messages to the appropriate channel with retry."""
         logger.info("Outbound dispatcher started")
 
         while True:
@@ -120,9 +167,14 @@ class ChannelManager:
                 channel = self.channels.get(msg.channel)
                 if channel:
                     try:
-                        await channel.send(msg)
+                        await _retry_with_backoff(
+                            lambda: channel.send(msg),
+                            max_retries=3,
+                            base_delay=1.0,
+                            max_delay=30.0,
+                        )
                     except Exception as e:
-                        logger.error(f"Error sending to {msg.channel}: {e}")
+                        logger.error(f"Failed to send to {msg.channel} after retries: {e}")
                 else:
                     logger.warning(f"Unknown channel: {msg.channel}")
 
