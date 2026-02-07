@@ -425,8 +425,23 @@ def agent(
     if message:
         # Single message mode
         async def run_once():
-            response = await agent_loop.process_direct(message, session_id)
-            console.print(f"\n{__logo__} {response}")
+            # Start MCP connections
+            if hasattr(agent_loop, 'mcp_client') and agent_loop.mcp_client:
+                try:
+                    await agent_loop.start_mcp()
+                except Exception as e:
+                    logger.warning(f"Failed to start MCP: {e}")
+
+            try:
+                response = await agent_loop.process_direct(message, session_id)
+                console.print(f"\n{__logo__} {response}")
+            finally:
+                # Stop MCP connections
+                if hasattr(agent_loop, 'mcp_client') and agent_loop.mcp_client:
+                    try:
+                        await agent_loop.stop_mcp()
+                    except Exception:
+                        pass
 
         asyncio.run(run_once())
     else:
@@ -434,17 +449,32 @@ def agent(
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
 
         async def run_interactive():
-            while True:
+            # Start MCP connections
+            if hasattr(agent_loop, 'mcp_client') and agent_loop.mcp_client:
                 try:
-                    user_input = console.input("[bold blue]You:[/bold blue] ")
-                    if not user_input.strip():
-                        continue
+                    await agent_loop.start_mcp()
+                except Exception as e:
+                    logger.warning(f"Failed to start MCP: {e}")
 
-                    response = await agent_loop.process_direct(user_input, session_id)
-                    console.print(f"\n{__logo__} {response}\n")
-                except KeyboardInterrupt:
-                    console.print("\nGoodbye!")
-                    break
+            try:
+                while True:
+                    try:
+                        user_input = console.input("[bold blue]You:[/bold blue] ")
+                        if not user_input.strip():
+                            continue
+
+                        response = await agent_loop.process_direct(user_input, session_id)
+                        console.print(f"\n{__logo__} {response}\n")
+                    except KeyboardInterrupt:
+                        console.print("\nGoodbye!")
+                        break
+            finally:
+                # Stop MCP connections
+                if hasattr(agent_loop, 'mcp_client') and agent_loop.mcp_client:
+                    try:
+                        await agent_loop.stop_mcp()
+                    except Exception:
+                        pass
 
         asyncio.run(run_interactive())
 

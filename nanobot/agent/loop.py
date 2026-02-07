@@ -126,7 +126,6 @@ class AgentLoop:
             )
         except Exception as e:
             logger.warning(f"[agent] Failed to initialize summarizer: {e}")
-        self._init_summarizer()
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
