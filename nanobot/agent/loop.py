@@ -101,6 +101,9 @@ class AgentLoop:
         )
 
         self._running = False
+        # Token usage tracking
+        self._token_usage: dict[str, dict[str, int]] = {}  # session_key -> {prompt, completion, total}
+        self._global_tokens = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
         self._register_default_tools()
         self._init_summarizer()
 
@@ -258,6 +261,59 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
 
+    def _track_token_usage(self, session_key: str, usage: dict[str, int]) -> None:
+        """Track token usage for a session and globally."""
+        if not usage:
+            return
+
+        prompt = usage.get("prompt_tokens", 0)
+        completion = usage.get("completion_tokens", 0)
+        total = usage.get("total_tokens", prompt + completion)
+
+        # Update session stats
+        if session_key not in self._token_usage:
+            self._token_usage[session_key] = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
+
+        self._token_usage[session_key]["prompt"] += prompt
+        self._token_usage[session_key]["completion"] += completion
+        self._token_usage[session_key]["total"] += total
+        self._token_usage[session_key]["calls"] += 1
+
+        # Update global stats
+        self._global_tokens["prompt"] += prompt
+        self._global_tokens["completion"] += completion
+        self._global_tokens["total"] += total
+        self._global_tokens["calls"] += 1
+
+        # Log periodically (every 10 calls)
+        if self._global_tokens["calls"] % 10 == 0:
+            logger.info(
+                f"[Token Usage] Total: {self._global_tokens['total']:,} tokens "
+                f"(prompt: {self._global_tokens['prompt']:,}, "
+                f"completion: {self._global_tokens['completion']:,}) "
+                f"in {self._global_tokens['calls']} calls"
+            )
+
+    def get_token_usage(self, session_key: str | None = None) -> dict:
+        """
+        Get token usage statistics.
+
+        Args:
+            session_key: Optional session key to get stats for. If None, returns global stats.
+
+        Returns:
+            Dict with prompt, completion, total tokens and call count.
+        """
+        if session_key and session_key in self._token_usage:
+            return self._token_usage[session_key].copy()
+        return self._global_tokens.copy()
+
+    async def _execute_single_tool(self, tool_call) -> str:
+        """Execute a single tool call (for parallel execution)."""
+        args_str = json.dumps(tool_call.arguments)
+        logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+        return await self.tools.execute(tool_call.name, tool_call.arguments)
+
     def reload_context(self) -> dict[str, Any]:
         """
         Reload agent context (skills, configuration).
@@ -350,6 +406,9 @@ class AgentLoop:
                 model=self.model
             )
 
+            # Track token usage
+            self._track_token_usage(msg.session_key, response.usage)
+
             # Handle tool calls
             if response.has_tool_calls:
                 # Add assistant message with tool calls
@@ -368,11 +427,18 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts
                 )
 
-                # Execute tools
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                # Execute tools in parallel (independent calls)
+                tool_results = await asyncio.gather(*[
+                    self._execute_single_tool(tool_call)
+                    for tool_call in response.tool_calls
+                ], return_exceptions=True)
+
+                # Add results to messages (preserve order matching tool calls)
+                for i, tool_call in enumerate(response.tool_calls):
+                    result = tool_results[i]
+                    if isinstance(result, Exception):
+                        result = f"Error executing {tool_call.name}: {str(result)}"
+                        logger.error(f"Tool execution error: {result}")
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -448,6 +514,9 @@ class AgentLoop:
                 model=self.model
             )
 
+            # Track token usage
+            self._track_token_usage(session_key, response.usage)
+
             if response.has_tool_calls:
                 tool_call_dicts = [
                     {
@@ -464,10 +533,18 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts
                 )
 
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                # Execute tools in parallel (independent calls)
+                tool_results = await asyncio.gather(*[
+                    self._execute_single_tool(tool_call)
+                    for tool_call in response.tool_calls
+                ], return_exceptions=True)
+
+                # Add results to messages (preserve order matching tool calls)
+                for i, tool_call in enumerate(response.tool_calls):
+                    result = tool_results[i]
+                    if isinstance(result, Exception):
+                        result = f"Error executing {tool_call.name}: {str(result)}"
+                        logger.error(f"Tool execution error: {result}")
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )

@@ -1,41 +1,16 @@
 """Cron/scheduling tool for managing scheduled tasks."""
 
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from nanobot.agent.tools.base import Tool
-from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
+from nanobot.cron.types import CronSchedule
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
-    """Compute next run time in ms."""
-    if schedule.kind == "at":
-        return schedule.at_ms if schedule.at_ms and schedule.at_ms > now_ms else None
-
-    if schedule.kind == "every":
-        if not schedule.every_ms or schedule.every_ms <= 0:
-            return None
-        return now_ms + schedule.every_ms
-
-    if schedule.kind == "cron" and schedule.expr:
-        try:
-            from croniter import croniter
-            cron = croniter(schedule.expr, time.time())
-            next_time = cron.get_next()
-            return int(next_time * 1000)
-        except Exception:
-            return None
-
-    return None
 
 
 class CronTool(Tool):
@@ -44,6 +19,8 @@ class CronTool(Tool):
 
     This tool allows the agent to create, list, and remove scheduled tasks
     directly without using shell commands.
+
+    Delegates to CronService for all operations to avoid code duplication.
     """
 
     def __init__(self, store_path: Path):
@@ -53,8 +30,9 @@ class CronTool(Tool):
         Args:
             store_path: Path to the cron jobs JSON file.
         """
-        self.store_path = store_path
-        self._store: CronStore | None = None
+        from nanobot.cron.service import CronService
+        # Create a CronService instance (no callback needed for tool usage)
+        self._service = CronService(store_path=store_path, on_job=None)
 
     @property
     def name(self) -> str:
@@ -125,101 +103,6 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
             }
         }
 
-    def _load_store(self) -> CronStore:
-        """Load jobs from disk."""
-        if self._store:
-            return self._store
-
-        if self.store_path.exists():
-            try:
-                import json
-
-                data = json.loads(self.store_path.read_text())
-                jobs = []
-                for j in data.get("jobs", []):
-                    jobs.append(CronJob(
-                        id=j["id"],
-                        name=j["name"],
-                        enabled=j.get("enabled", True),
-                        schedule=CronSchedule(
-                            kind=j["schedule"]["kind"],
-                            at_ms=j["schedule"].get("atMs"),
-                            every_ms=j["schedule"].get("everyMs"),
-                            expr=j["schedule"].get("expr"),
-                            tz=j["schedule"].get("tz"),
-                        ),
-                        payload=CronPayload(
-                            kind=j["payload"].get("kind", "agent_turn"),
-                            message=j["payload"].get("message", ""),
-                            deliver=j["payload"].get("deliver", False),
-                            channel=j["payload"].get("channel"),
-                            to=j["payload"].get("to"),
-                        ),
-                        state=CronJobState(
-                            next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
-                            last_run_at_ms=j.get("state", {}).get("lastRunAtMs"),
-                            last_status=j.get("state", {}).get("lastStatus"),
-                            last_error=j.get("state", {}).get("lastError"),
-                        ),
-                        created_at_ms=j.get("createdAtMs", 0),
-                        updated_at_ms=j.get("updatedAtMs", 0),
-                        delete_after_run=j.get("deleteAfterRun", False),
-                    ))
-                self._store = CronStore(jobs=jobs)
-            except Exception as e:
-                logger.warning(f"Failed to load cron store: {e}")
-                self._store = CronStore()
-        else:
-            self._store = CronStore()
-
-        return self._store
-
-    def _save_store(self) -> None:
-        """Save jobs to disk."""
-        if not self._store:
-            return
-
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-
-        import json
-
-        data = {
-            "version": self._store.version,
-            "jobs": [
-                {
-                    "id": j.id,
-                    "name": j.name,
-                    "enabled": j.enabled,
-                    "schedule": {
-                        "kind": j.schedule.kind,
-                        "atMs": j.schedule.at_ms,
-                        "everyMs": j.schedule.every_ms,
-                        "expr": j.schedule.expr,
-                        "tz": j.schedule.tz,
-                    },
-                    "payload": {
-                        "kind": j.payload.kind,
-                        "message": j.payload.message,
-                        "deliver": j.payload.deliver,
-                        "channel": j.payload.channel,
-                        "to": j.payload.to,
-                    },
-                    "state": {
-                        "nextRunAtMs": j.state.next_run_at_ms,
-                        "lastRunAtMs": j.state.last_run_at_ms,
-                        "lastStatus": j.state.last_status,
-                        "lastError": j.state.last_error,
-                    },
-                    "createdAtMs": j.created_at_ms,
-                    "updatedAtMs": j.updated_at_ms,
-                    "deleteAfterRun": j.delete_after_run,
-                }
-                for j in self._store.jobs
-            ]
-        }
-
-        self.store_path.write_text(json.dumps(data, indent=2))
-
     def _format_datetime(self, ms: int | None) -> str:
         """Format milliseconds as readable datetime."""
         if not ms:
@@ -232,7 +115,7 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
             return f"at {self._format_datetime(schedule.at_ms)}"
         elif schedule.kind == "every":
             ms = schedule.every_ms if schedule.every_ms else 0
-            secs = ms / 1000  # Convert to seconds for display logic
+            secs = ms / 1000
             if secs < 60:
                 return f"every {int(secs)}s"
             elif secs < 3600:
@@ -271,10 +154,7 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
         to: str | None = None,
         **kwargs: Any,
     ) -> str:
-        """Add a new scheduled job."""
-        store = self._load_store()
-        now = _now_ms()
-
+        """Add a new scheduled job by delegating to CronService."""
         # Build schedule
         schedule = CronSchedule(kind=schedule_type)
 
@@ -297,34 +177,19 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
                 return "Error: 'cron_expr' required for 'cron' schedule type"
             schedule.expr = cron_expr
 
-        # Compute next run
-        next_run = _compute_next_run(schedule, now)
-        if not next_run and schedule_type != "at":
-            return "Error: Could not compute next run time for the given schedule"
-
-        # Create job
-        job = CronJob(
-            id=str(uuid.uuid4())[:8],
+        # Delegate to CronService
+        delete_after_run = (schedule_type == "at")
+        job = await self._service.add_job(
             name=name,
-            enabled=True,
             schedule=schedule,
-            payload=CronPayload(
-                kind="agent_turn",
-                message=message,
-                deliver=deliver,
-                channel=channel,
-                to=to,
-            ),
-            state=CronJobState(next_run_at_ms=next_run),
-            created_at_ms=now,
-            updated_at_ms=now,
-            delete_after_run=(schedule_type == "at"),  # Auto-cleanup one-time jobs
+            message=message,
+            deliver=deliver,
+            channel=channel,
+            to=to,
+            delete_after_run=delete_after_run,
         )
 
-        store.jobs.append(job)
-        self._save_store()
-
-        next_run_str = self._format_datetime(next_run) if next_run else "N/A"
+        next_run_str = self._format_datetime(job.state.next_run_at_ms) if job.state.next_run_at_ms else "N/A"
 
         result = f"Created scheduled task '{name}' (ID: {job.id})\n"
         result += f"  Schedule: {self._format_schedule(schedule)}\n"
@@ -335,15 +200,15 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
         return result
 
     async def _list_jobs(self) -> str:
-        """List all scheduled jobs."""
-        store = self._load_store()
+        """List all scheduled jobs by delegating to CronService."""
+        jobs = await self._service.list_jobs(include_disabled=True)
 
-        if not store.jobs:
+        if not jobs:
             return "No scheduled tasks."
 
         lines = ["Scheduled Tasks:\n"]
 
-        for job in sorted(store.jobs, key=lambda j: j.state.next_run_at_ms or float('inf')):
+        for job in jobs:
             status = "enabled" if job.enabled else "disabled"
             next_run = self._format_datetime(job.state.next_run_at_ms)
             last_run = self._format_datetime(job.state.last_run_at_ms)
@@ -363,17 +228,22 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
         return "\n".join(lines)
 
     async def _remove_job(self, job_id: str = "", **kwargs: Any) -> str:
-        """Remove a scheduled job."""
+        """Remove a scheduled job by delegating to CronService."""
         if not job_id:
             return "Error: 'job_id' parameter required for remove operation"
 
-        store = self._load_store()
-        before = len(store.jobs)
-        store.jobs = [j for j in store.jobs if j.id != job_id]
-        removed = len(store.jobs) < before
+        removed = await self._service.remove_job(job_id)
 
         if removed:
-            self._save_store()
             return f"Removed scheduled task {job_id}"
         else:
             return f"Error: Job '{job_id}' not found"
+
+    @property
+    def store_path(self) -> Path:
+        """Expose the store path for testing purposes."""
+        return self._service.store_path
+
+    async def _load_store(self):
+        """Load store for testing purposes."""
+        return await self._service._load_store()

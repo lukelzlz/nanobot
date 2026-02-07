@@ -46,15 +46,58 @@ class StdioTransport:
         self._read_task: asyncio.Task | None = None
         self._initialized = False
 
+        # Validate command for security
+        is_safe, error = self._validate_command_safe(command, args)
+        if not is_safe:
+            logger.warning(f"[Security] MCP command validation failed: {error}")
+            raise MCPTransportError(f"Invalid MCP server command: {error}")
+
+    def _validate_command_safe(self, command: str, args: list[str]) -> tuple[bool, str]:
+        """
+        Validate that the MCP server command is safe to execute.
+
+        SECURITY: Prevents command injection through MCP configuration.
+
+        Returns:
+            Tuple of (is_safe, error_message)
+        """
+        from pathlib import Path
+
+        # Check for shell injection patterns in command and args
+        dangerous_patterns = ['|', '&', ';', '$', '`', '\\', '>', '<', '\n', '\r']
+        all_parts = [command] + args
+
+        for part in all_parts:
+            for pattern in dangerous_patterns:
+                if pattern in part:
+                    return False, f"Shell character '{pattern}' not allowed in command"
+
+        # Allowlist of safe MCP server commands
+        safe_commands = {
+            'npx', 'npm', 'pnpm', 'yarn', 'bun',
+            'uvx', 'uv',
+            'python', 'python3', 'python3.x',
+            'node', 'deno',
+            'cargo', 'rustc',
+            'go', 'go run',
+            'java', 'javac',
+            'docker', 'docker-compose',
+            'podman',
+        }
+
+        base_cmd = Path(command).name
+        if base_cmd not in safe_commands:
+            return False, f"Command not in safe list: {command}"
+
+        return True, ""
+
     async def start(self) -> None:
         """Start the MCP server process."""
         cmd_list = [self.command] + self.args
         logger.debug(f"Starting MCP server: {' '.join(cmd_list)}")
 
-        # Prepare environment
-        import os
-        env = os.environ.copy()
-        env.update(self.env)
+        # Prepare environment with security filtering
+        env = self._prepare_sanitize_env()
 
         try:
             self.process = await asyncio.create_subprocess_exec(
@@ -74,6 +117,59 @@ class StdioTransport:
 
         # Initialize the connection
         await self._initialize()
+
+    def _prepare_sanitize_env(self) -> dict[str, str]:
+        """
+        Prepare environment variables for MCP server with security filtering.
+
+        SECURITY: This filters out sensitive environment variables to prevent
+        credential exfiltration to MCP server processes.
+
+        Returns:
+            Sanitized environment dictionary
+        """
+        import os
+
+        # Patterns that indicate sensitive data
+        sensitive_patterns = [
+            'API_KEY', 'APISECRET', 'AUTH_TOKEN', 'TOKEN',
+            'SECRET', 'PASSWORD', 'PASSWD', 'PASS',
+            'PRIVATE_KEY', 'PRIVKEY', 'KEY',
+            'CREDENTIAL', 'CREDS',
+            'SESSION', 'COOKIE',
+            'GROQ', 'OPENAI', 'ANTHROPIC', 'OPENROUTER',
+            'TELEGRAM', 'DISCORD', 'WHATSAPP',
+        ]
+
+        # Start with safe environment variables only
+        # Allow PATH, HOME, USER, LANG, and other basic system vars
+        safe_defaults = {
+            'PATH': os.environ.get('PATH', ''),
+            'HOME': os.environ.get('HOME', ''),
+            'USER': os.environ.get('USER', ''),
+            'LANG': os.environ.get('LANG', 'en_US.UTF-8'),
+            'LC_ALL': os.environ.get('LC_ALL', 'en_US.UTF-8'),
+            'TERM': os.environ.get('TERM', 'xterm-256color'),
+        }
+
+        # Add user-provided env vars (with sanitization check)
+        env = safe_defaults.copy()
+
+        # Add custom env vars from config, but warn about sensitive ones
+        for key, value in self.env.items():
+            # Check if this might be sensitive
+            key_upper = key.upper()
+            is_sensitive = any(pattern in key_upper for pattern in sensitive_patterns)
+
+            if is_sensitive:
+                logger.warning(
+                    f"[Security] Sensitive environment variable '{key}' being passed to MCP server. "
+                    f"Consider using a secure credential manager instead."
+                )
+
+            env[key] = value
+
+        return env
 
     async def _initialize(self) -> None:
         """Send initialization request to the MCP server."""
@@ -307,12 +403,76 @@ class StdioTransport:
         return self.process is not None and self._initialized
 
 
+def _validate_mcp_url(url: str) -> tuple[bool, str]:
+    """
+    Validate MCP server URL for SSRF protection.
+
+    SECURITY: Prevents MCP servers from connecting to internal services.
+    Allows localhost for local MCP servers but blocks other private IPs.
+
+    Args:
+        url: The MCP server URL to validate
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    try:
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https', 'ws', 'wss'):
+            return False, f"Invalid scheme: {parsed.scheme}"
+
+        hostname = parsed.netloc.split(':')[0]
+
+        # Skip validation for localhost/127.0.0.1 (common for local MCP servers)
+        if hostname in ('localhost', '127.0.0.1', '::1'):
+            return True, ""
+
+        # Check if hostname is an IP address
+        try:
+            ip = ipaddress.ip_address(hostname)
+            # Block private IPs (but allow localhost above)
+            if ip.is_private or ip.is_reserved or ip.is_link_local:
+                return False, f"Private IP addresses not allowed for MCP servers: {hostname}"
+            return True, ""
+        except ValueError:
+            # Not an IP address, resolve and check
+            pass
+
+        # Resolve hostname to IP
+        try:
+            addr = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(addr)
+
+            # Block cloud metadata and private ranges
+            cloud_metadata_ips = ['169.254.169.254', '100.100.100.200']
+            if addr in cloud_metadata_ips:
+                return False, f"Cloud metadata access blocked: {addr}"
+
+            if ip.is_private or ip.is_reserved or ip.is_link_local:
+                return False, f"Private IP addresses not allowed for MCP servers: {addr}"
+
+        except (socket.gaierror, OSError):
+            # Resolution failed - allow it (might be a .local address or mDNS)
+            pass
+
+        return True, ""
+    except Exception as e:
+        return False, f"URL validation failed: {e}"
+
+
 class SSETransport:
     """
     Transport layer for communicating with MCP servers via Server-Sent Events.
 
     This transport connects to an HTTP server that provides MCP endpoints
     using SSE for server-to-client messages.
+
+    SECURITY: URLs are validated for SSRF protection to prevent access to
+    internal network services.
     """
 
     def __init__(
@@ -332,6 +492,12 @@ class SSETransport:
         self._request_id = 0
         self._session: Any = None  # httpx.AsyncSession
         self._endpoint: str | None = None
+
+        # Validate URL for SSRF protection
+        is_valid, error = _validate_mcp_url(url)
+        if not is_valid:
+            logger.warning(f"[Security] MCP URL validation failed: {error}")
+            raise MCPTransportError(f"Invalid MCP server URL: {error}")
 
     async def start(self) -> None:
         """Start the SSE transport connection."""

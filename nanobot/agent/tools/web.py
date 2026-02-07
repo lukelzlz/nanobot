@@ -1,9 +1,11 @@
 """Web tools: web_search and web_fetch."""
 
 import html
+import ipaddress
 import json
 import os
 import re
+import socket
 from typing import Any
 from urllib.parse import urlparse
 
@@ -30,14 +32,70 @@ def _normalize(text: str) -> str:
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
+def _is_private_ip(hostname: str) -> bool:
+    """
+    Check if hostname resolves to a private/internal IP address.
+
+    This prevents SSRF attacks against internal services.
+
+    Args:
+        hostname: The hostname to check
+
+    Returns:
+        True if the hostname resolves to a private IP
+    """
+    try:
+        # Get IP address
+        addr = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(addr)
+
+        # Check for private IP ranges
+        if ip.is_private:
+            return True
+        if ip.is_loopback:
+            return True
+        if ip.is_link_local:
+            return True
+        if ip.is_reserved:
+            return True
+
+        # Block specific cloud metadata IPs
+        cloud_metadata_ips = [
+            '169.254.169.254',  # AWS/GCP/Azure metadata
+            '100.100.100.200',  # Alibaba Cloud
+        ]
+        if addr in cloud_metadata_ips:
+            return True
+
+        return False
+    except (socket.gaierror, ValueError):
+        # If resolution fails, block it for safety
+        return True
+
+
 def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL: must be http(s) with valid domain."""
+    """
+    Validate URL with SSRF protection.
+
+    Checks:
+    1. Scheme must be http/https
+    2. Must have a valid domain
+    3. Must not resolve to private/internal IP
+    """
     try:
         p = urlparse(url)
         if p.scheme not in ('http', 'https'):
             return False, f"Only http/https allowed, got '{p.scheme or 'none'}'"
         if not p.netloc:
             return False, "Missing domain"
+
+        # Extract hostname (remove port)
+        hostname = p.netloc.split(':')[0]
+
+        # Check for private IP addresses
+        if _is_private_ip(hostname):
+            return False, "Access to private/internal IP addresses is not allowed"
+
         return True, ""
     except Exception as e:
         return False, str(e)

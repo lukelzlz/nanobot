@@ -1045,10 +1045,67 @@ def uninstall_service(
 # ============================================================================
 
 
+def _check_service_status() -> tuple[bool, str]:
+    """Check if nanobot service is running via systemd or process."""
+    import subprocess
+
+    # Try systemd user service first
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "nanobot"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True, "systemd --user"
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+    # Try system service
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "nanobot"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True, "systemd"
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+    # Check for running process
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "nanobot.*gateway"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            pids = result.stdout.strip().split("\n")
+            return True, f"process ({len(pids)} running)"
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+    return False, "not running"
+
+
+def _format_channel_status(name: str, config_obj, has_token: bool) -> str:
+    """Format channel status line."""
+    enabled = "[green]✓[/green]" if config_obj.enabled else "[dim]✗[/dim]"
+    token_status = "[green]✓[/green]" if has_token else "[yellow]![/yellow]"
+    return f"{name}: {enabled} (token: {token_status})"
+
+
 @app.command()
-def status():
-    """Show nanobot status."""
-    from nanobot.config.loader import get_config_path, load_config
+def status(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed status"),
+):
+    """Show nanobot status including service, channels, and scheduled tasks."""
+    import time
+
+    from nanobot.config.loader import get_config_path, get_data_dir, load_config
+    from nanobot.cron.service import CronService
+    from nanobot.git_update.service import GitUpdater
 
     config_path = get_config_path()
     config = load_config()
@@ -1056,25 +1113,104 @@ def status():
 
     console.print(f"{__logo__} nanobot Status\n")
 
-    console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
-    console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    # === Service Status ===
+    is_running, running_info = _check_service_status()
+    status_icon = "[green]●[/green]" if is_running else "[red]●[/red]"
+    console.print(f"Service: {status_icon} {running_info}")
 
-    if config_path.exists():
-        console.print(f"Model: {config.agents.defaults.model}")
+    # === Config Status ===
+    console.print("\n[bold]Configuration[/bold]")
+    console.print(f"  Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
+    console.print(f"  Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    console.print(f"  Model: {config.agents.defaults.model}")
 
-        # Check API keys
-        has_openrouter = bool(config.providers.openrouter.api_key)
-        has_anthropic = bool(config.providers.anthropic.api_key)
-        has_openai = bool(config.providers.openai.api_key)
-        has_gemini = bool(config.providers.gemini.api_key)
-        has_vllm = bool(config.providers.vllm.api_base)
+    # === API Keys ===
+    if verbose:
+        console.print("\n[bold]API Keys[/bold]")
+        providers_status = [
+            ("OpenRouter", config.providers.openrouter.api_key),
+            ("Anthropic", config.providers.anthropic.api_key),
+            ("OpenAI", config.providers.openai.api_key),
+            ("Gemini", config.providers.gemini.api_key),
+            ("Groq", config.providers.groq.api_key),
+            ("Zhipu", config.providers.zhipu.api_key),
+        ]
+        for name, key in providers_status:
+            status = "[green]✓[/green]" if key else "[dim]not set[/dim]"
+            console.print(f"  {name}: {status}")
+        if config.providers.vllm.api_base:
+            console.print(f"  vLLM: [green]✓[/green] {config.providers.vllm.api_base}")
+        else:
+            console.print("  vLLM: [dim]not set[/dim]")
 
-        console.print(f"OpenRouter API: {'[green]✓[/green]' if has_openrouter else '[dim]not set[/dim]'}")
-        console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
-        console.print(f"OpenAI API: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
-        console.print(f"Gemini API: {'[green]✓[/green]' if has_gemini else '[dim]not set[/dim]'}")
-        vllm_status = f"[green]✓ {config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
-        console.print(f"vLLM/Local: {vllm_status}")
+    # === Channels ===
+    console.print("\n[bold]Channels[/bold]")
+    channels = [
+        ("WhatsApp", config.channels.whatsapp, config.channels.whatsapp.bridge_url != "ws://localhost:3001"),
+        ("Telegram", config.channels.telegram, bool(config.channels.telegram.token)),
+        ("Discord", config.channels.discord, bool(config.channels.discord.token)),
+    ]
+    for name, channel_cfg, has_token in channels:
+        enabled = "[green]✓[/green]" if channel_cfg.enabled else "[dim]✗[/dim]"
+        token_status = "[green]✓[/green]" if has_token else "[yellow]![/yellow]"
+        console.print(f"  {name}: {enabled} (configured: {token_status})")
+
+    # === Cron Jobs === (async call)
+    async def get_cron_status():
+        cron_store_path = get_data_dir() / "cron" / "jobs.json"
+        cron_service = CronService(cron_store_path)
+        status_data = await cron_service.status()
+        jobs = await cron_service.list_jobs(include_disabled=False)
+        return status_data, jobs
+
+    cron_status, cron_jobs = asyncio.run(get_cron_status())
+    console.print("\n[bold]Cron Jobs[/bold]")
+    console.print(f"  Total: {cron_status['jobs']} ({len(cron_jobs)} enabled)")
+    if cron_jobs and verbose:
+        for job in cron_jobs[:5]:  # Show first 5
+            next_run = ""
+            if job.state.next_run_at_ms:
+                next_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(job.state.next_run_at_ms / 1000))
+                next_run = f" → {next_time}"
+            console.print(f"  • {job.name}{next_run}")
+        if len(cron_jobs) > 5:
+            console.print(f"  [dim]... and {len(cron_jobs) - 5} more[/dim]")
+
+    # === Git Update === (sync call)
+    git_store_path = get_data_dir() / "git_update" / "state.json"
+    git_updater = GitUpdater(config, git_store_path)
+    git_status = git_updater.status()
+    console.print("\n[bold]Git Auto-Update[/bold]")
+    git_enabled = "[green]enabled[/green]" if git_status['enabled'] else "[dim]disabled[/dim]"
+    console.print(f"  Status: {git_enabled}")
+    if git_status['repos'] > 0:
+        console.print(f"  Repos: {git_status['repos']} configured")
+        if verbose:
+            repos = git_updater.list_repos()
+            for repo in repos[:3]:  # Show first 3
+                enabled = "[green]✓[/green]" if repo.enabled else "[dim]✗[/dim]"
+                last_status = repo.state.last_status or "unknown"
+                console.print(f"  • {repo.path[:30]}... {enabled} ({last_status})")
+            if len(repos) > 3:
+                console.print(f"  [dim]... and {len(repos) - 3} more[/dim]")
+
+    # === MCP ===
+    mcp_enabled = config.tools.mcp.enabled
+    mcp_servers = len(config.tools.mcp.servers) if mcp_enabled else 0
+    console.print("\n[bold]MCP[/bold]")
+    if mcp_enabled and mcp_servers > 0:
+        enabled_servers = sum(1 for s in config.tools.mcp.servers if s.enabled)
+        console.print("  Status: [green]enabled[/green]")
+        console.print(f"  Servers: {enabled_servers}/{mcp_servers} enabled")
+    else:
+        console.print("  Status: [dim]disabled[/dim]")
+
+    # === Tools ===
+    console.print("\n[bold]Tools[/bold]")
+    web_search_status = "[green]✓[/green]" if config.tools.web.search.api_key else "[dim]✗[/dim]"
+    console.print(f"  Web Search: {web_search_status}")
+    exec_restricted = "[yellow]restricted[/yellow]" if config.tools.exec.restrict_to_workspace else "[green]unrestricted[/green]"
+    console.print(f"  Shell: {exec_restricted} (timeout: {config.tools.exec.timeout}s)")
 
 
 if __name__ == "__main__":
