@@ -214,31 +214,9 @@ def gateway(
         auto_summary_config=config.agents.defaults.auto_summary.model_dump(),
     )
 
-    # Create cron service
-    async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
-        # Use job's channel/to as default context for message tool
-        target_channel = job.payload.channel or "whatsapp"
-        target_chat_id = job.payload.to or "cron"
-
-        response = await agent.process_direct(
-            job.payload.message,
-            session_key=f"cron:{job.id}",
-            channel=target_channel,
-            chat_id=target_chat_id,
-        )
-        # Optionally deliver to channel
-        if job.payload.deliver and job.payload.to:
-            from nanobot.bus.events import OutboundMessage
-            await bus.publish_outbound(OutboundMessage(
-                channel=target_channel,
-                chat_id=target_chat_id,
-                content=response or ""
-            ))
-        return response
-
+    # Create cron service (initialized after channels for broadcast support)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path, on_job=on_cron_job)
+    cron: CronService | None = None  # Will be set after channels are created
 
     # Create git update service
     async def on_git_update(result: GitUpdateResult) -> None:
@@ -271,6 +249,52 @@ def gateway(
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
+
+    # Create cron service (after channels so we can broadcast)
+    async def on_cron_job(job: CronJob) -> str | None:
+        """Execute a cron job through the agent."""
+        from nanobot.bus.events import OutboundMessage
+
+        # Determine target channel and chat_id
+        target_channel = job.payload.channel
+        target_chat_id = job.payload.to
+
+        # Use first enabled channel as default for agent context
+        default_channel = channels.enabled_channels[0] if channels.enabled_channels else "whatsapp"
+        agent_channel = target_channel or default_channel
+        agent_chat_id = target_chat_id or "system"
+
+        response = await agent.process_direct(
+            job.payload.message,
+            session_key=f"cron:{job.id}",
+            channel=agent_channel,
+            chat_id=agent_chat_id,
+        )
+
+        # Deliver to channel(s)
+        if job.payload.deliver:
+            # If specific channel/to provided, send there
+            if target_channel and target_chat_id:
+                await bus.publish_outbound(OutboundMessage(
+                    channel=target_channel,
+                    chat_id=target_chat_id,
+                    content=response or ""
+                ))
+            # Otherwise broadcast to all channels' allow_from users
+            else:
+                for name, channel in channels.channels.items():
+                    allow_list = getattr(channel.config, 'allow_from', [])
+                    if allow_list:
+                        for chat_id in allow_list:
+                            await bus.publish_outbound(OutboundMessage(
+                                channel=name,
+                                chat_id=chat_id,
+                                content=response or ""
+                            ))
+
+        return response
+
+    cron = CronService(cron_store_path, on_job=on_cron_job)
 
     # Get cron job count - read directly from file to avoid async issues
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
