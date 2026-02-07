@@ -133,26 +133,109 @@ class GitUpdater:
         except Exception as e:
             return 1, "", str(e)
 
+    def _validate_command_safe(self, cmd: str) -> tuple[bool, str]:
+        """
+        Validate that a command is safe to execute.
+
+        SECURITY: This prevents command injection attacks from malicious config.
+
+        Args:
+            cmd: Command string to validate
+
+        Returns:
+            Tuple of (is_safe, error_message)
+        """
+        import shlex
+
+        # Patterns that indicate shell features (command injection)
+        dangerous_patterns = [
+            '|', '&', ';', '$', '`', '\\', '>', '<', '\n', '\r',
+            '&&', '||', ';;', '<<', '>>', '<>', '$(', '${',
+        ]
+
+        for pattern in dangerous_patterns:
+            if pattern in cmd:
+                return False, f"Command contains shell features: {pattern}"
+
+        # Try to parse the command safely
+        try:
+            parts = shlex.split(cmd)
+            if not parts:
+                return False, "Empty command"
+
+            command_name = parts[0]
+
+            # Only allow a whitelist of safe commands
+            safe_commands = {
+                'npm', 'npm', 'pnpm', 'yarn',
+                'pip', 'pip3', 'python', 'python3', 'python3.x',
+                'poetry', 'uv',
+                'make', 'cmake', 'ninja',
+                'cargo', 'rustc',
+                'go', 'gofmt',
+                'java', 'javac', 'mvn', 'gradle',
+                'pytest', 'coverage',
+                'black', 'ruff', 'mypy', 'pylint', 'flake8',
+                'eslint', 'prettier',
+                'node', 'deno', 'bun',
+                'bash', 'sh', 'zsh',
+                'systemctl', 'service',
+                'docker', 'docker-compose',
+                'pytest', 'tox',
+                'coverage',
+            }
+
+            base_cmd = Path(command_name).name
+            if base_cmd not in safe_commands:
+                return False, f"Command not in safe list: {command_name}"
+
+        except ValueError:
+            return False, "Invalid command syntax"
+
+        return True, ""
+
     async def _execute_commands(self, commands: list[str], cwd: Path) -> list[str]:
-        """Execute shell commands after update."""
+        """
+        Execute shell commands after update with security validation.
+
+        SECURITY: Commands are validated against shell injection patterns
+        and executed using subprocess_exec instead of shell.
+        """
+        import shlex
         results = []
+
         for cmd in commands:
+            # Validate command safety
+            is_safe, error = self._validate_command_safe(cmd)
+            if not is_safe:
+                logger.warning(f"[Security] Blocked potentially unsafe command: {cmd} - {error}")
+                results.append(f"Command '{cmd}' blocked: {error}")
+                continue
+
             try:
-                proc = await asyncio.create_subprocess_shell(
-                    cmd,
+                # Parse command into arguments
+                args = shlex.split(cmd)
+
+                # Execute using subprocess_exec instead of shell
+                proc = await asyncio.create_subprocess_exec(
+                    *args,
                     cwd=cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+
                 if proc.returncode != 0:
                     results.append(f"Command '{cmd}' failed: {stderr.decode()}")
                 else:
                     output = stdout.decode().strip()
                     if output:
                         results.append(f"Command '{cmd}': {output}")
+            except asyncio.TimeoutError:
+                results.append(f"Command '{cmd}' timed out")
             except Exception as e:
                 results.append(f"Command '{cmd}' error: {e}")
+
         return results
 
     async def _update_repo(self, repo: GitRepo) -> GitUpdateResult:

@@ -60,6 +60,9 @@ class BaseChannel(ABC):
         """
         Check if a sender is allowed to use this bot.
 
+        IMPORTANT: Default behavior is DENY-ALL for security.
+        An empty allow_from list means NO ONE is allowed.
+
         Args:
             sender_id: The sender's identifier.
 
@@ -68,9 +71,11 @@ class BaseChannel(ABC):
         """
         allow_list = getattr(self.config, "allow_from", [])
 
-        # If no allow list, allow everyone
+        # SECURITY: Default to DENY-ALL instead of allow-all
+        # If no allow list is configured, no one is allowed
+        # This prevents unauthorized access when allow_from is not set
         if not allow_list:
-            return True
+            return False
 
         sender_str = str(sender_id)
         if sender_str in allow_list:

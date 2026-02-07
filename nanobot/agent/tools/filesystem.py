@@ -1,5 +1,7 @@
 """File system tools: read, write, edit."""
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +25,32 @@ def _validate_path_safety(
         Tuple of (is_safe, error_message)
     """
     # Check for path traversal patterns in the original path string
+    # This catches various encoding attempts
     path_str = str(file_path)
-    if "../" in path_str or "..\\" in path_str:
-        return False, "Error: Path traversal detected (../ or ..\\ not allowed)"
+
+    # Comprehensive traversal pattern detection
+    traversal_patterns = [
+        r"\.\.",               # parent directory
+        r"\.%2e",              # URL-encoded dot
+        r"%2e\.",              # URL-encoded dot (reversed)
+        r"%2e%2e",             # Fully URL-encoded ..
+        r"~%2",                # tilde encoding attempts
+        r"\.\.",               # Unicode and other variants
+    ]
+
+    for pattern in traversal_patterns:
+        if re.search(pattern, path_str, re.IGNORECASE):
+            return False, "Error: Path traversal detected"
+
+    # Block expanduser to non-workspace home directories
+    if path_str.startswith("~") and workspace is not None:
+        # Only allow ~ if it resolves to within workspace
+        expanded = file_path.expanduser().resolve()
+        try:
+            if not expanded.is_relative_to(workspace.resolve()):
+                return False, "Error: Home directory expansion outside workspace not allowed"
+        except ValueError:
+            return False, "Error: Invalid path"
 
     # If workspace is specified, ensure path is within workspace
     if workspace is not None:
@@ -37,17 +62,31 @@ def _validate_path_safety(
         else:
             resolved_path = file_path.resolve()
 
+        # Use is_relative_to for proper path validation (Python 3.9+)
         try:
-            # Check if resolved path is within workspace
-            resolved_path.relative_to(workspace_resolved)
+            if not resolved_path.is_relative_to(workspace_resolved):
+                return False, f"Error: Path outside workspace not allowed"
         except ValueError:
-            return False, f"Error: Path outside workspace not allowed: {resolved_path}"
+            # On Windows, is_relative_to raises ValueError for different drives
+            return False, "Error: Path on different drive not allowed"
+
+        # Additional check: verify no symlinks lead outside workspace
+        try:
+            # Resolve all symlinks to get the real path
+            real_path = resolved_path.resolve()
+            if not real_path.is_relative_to(workspace_resolved):
+                return False, "Error: Symlink path outside workspace not allowed"
+        except (OSError, ValueError):
+            # If we can't resolve, block it for safety
+            return False, "Error: Unable to verify path safety"
 
     return True, ""
 
 
 class ReadFileTool(Tool):
     """Tool to read file contents."""
+
+    MAX_FILE_SIZE = 5_000_000  # 5MB max read size
 
     def __init__(self, workspace: Path | None = None, restrict_to_workspace: bool = False):
         """
@@ -83,27 +122,41 @@ class ReadFileTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
-            file_path = Path(path).expanduser()
+            # Don't expanduser by default - it's a security risk
+            # Only allow if explicitly within workspace
+            file_path = Path(path)
 
-            # For relative paths with workspace restriction, resolve relative to workspace
-            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
-                file_path = self.workspace / file_path
+            # Resolve the path properly
+            if not file_path.is_absolute() and self.workspace:
+                file_path = (self.workspace / file_path).resolve()
+            else:
+                file_path = file_path.resolve()
 
-            # Validate path safety
-            if self.restrict_to_workspace and self.workspace:
-                is_safe, error = _validate_path_safety(file_path, self.workspace)
+            # Always validate path safety when workspace is set
+            if self.workspace:
+                is_safe, error = _validate_path_safety(
+                    file_path,
+                    self.workspace,
+                )
                 if not is_safe:
                     return error
 
+            # Check file exists and is a file
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
 
+            # Check file size before reading
+            file_size = file_path.stat().st_size
+            if file_size > self.MAX_FILE_SIZE:
+                return f"Error: File too large ({file_size} bytes, max {self.MAX_FILE_SIZE})"
+
+            # Read and return content
             content = file_path.read_text(encoding="utf-8")
             return content
         except PermissionError:
-            return f"Error: Permission denied: {path}"
+            return f"Error: Permission denied"
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -156,15 +209,22 @@ class WriteFileTool(Tool):
             if content_size > self.max_size:
                 return f"Error: Content too large ({content_size} bytes, max {self.max_size})"
 
-            file_path = Path(path).expanduser()
+            # Don't use expanduser - security risk
+            file_path = Path(path)
 
-            # For relative paths with workspace restriction, resolve relative to workspace
-            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
-                file_path = self.workspace / file_path
+            # Resolve the path properly
+            if not file_path.is_absolute() and self.workspace:
+                file_path = (self.workspace / file_path).resolve()
+            else:
+                file_path = file_path.resolve()
 
-            # Validate path safety (check parent directory)
-            if self.restrict_to_workspace and self.workspace:
-                is_safe, error = _validate_path_safety(file_path.parent, self.workspace)
+            # Always validate path safety when workspace is set
+            if self.workspace:
+                # Validate parent directory for write operations
+                is_safe, error = _validate_path_safety(
+                    file_path.parent,
+                    self.workspace,
+                )
                 if not is_safe:
                     return error
 
@@ -172,7 +232,7 @@ class WriteFileTool(Tool):
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {content_size} bytes to {path}"
         except PermissionError:
-            return f"Error: Permission denied: {path}"
+            return f"Error: Permission denied"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -222,15 +282,21 @@ class EditFileTool(Tool):
 
     async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
-            file_path = Path(path).expanduser()
+            # Don't use expanduser - security risk
+            file_path = Path(path)
 
-            # For relative paths with workspace restriction, resolve relative to workspace
-            if self.restrict_to_workspace and self.workspace and not file_path.is_absolute():
-                file_path = self.workspace / file_path
+            # Resolve the path properly
+            if not file_path.is_absolute() and self.workspace:
+                file_path = (self.workspace / file_path).resolve()
+            else:
+                file_path = file_path.resolve()
 
-            # Validate path safety
-            if self.restrict_to_workspace and self.workspace:
-                is_safe, error = _validate_path_safety(file_path, self.workspace)
+            # Always validate path safety when workspace is set
+            if self.workspace:
+                is_safe, error = _validate_path_safety(
+                    file_path,
+                    self.workspace,
+                )
                 if not is_safe:
                     return error
 
@@ -252,7 +318,7 @@ class EditFileTool(Tool):
 
             return f"Successfully edited {path}"
         except PermissionError:
-            return f"Error: Permission denied: {path}"
+            return f"Error: Permission denied"
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
@@ -294,15 +360,21 @@ class ListDirTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
-            dir_path = Path(path).expanduser()
+            # Don't use expanduser - security risk
+            dir_path = Path(path)
 
-            # For relative paths with workspace restriction, resolve relative to workspace
-            if self.restrict_to_workspace and self.workspace and not dir_path.is_absolute():
-                dir_path = self.workspace / dir_path
+            # Resolve the path properly
+            if not dir_path.is_absolute() and self.workspace:
+                dir_path = (self.workspace / dir_path).resolve()
+            else:
+                dir_path = dir_path.resolve()
 
-            # Validate path safety
-            if self.restrict_to_workspace and self.workspace:
-                is_safe, error = _validate_path_safety(dir_path, self.workspace)
+            # Always validate path safety when workspace is set
+            if self.workspace:
+                is_safe, error = _validate_path_safety(
+                    dir_path,
+                    self.workspace,
+                )
                 if not is_safe:
                     return error
 
@@ -321,6 +393,6 @@ class ListDirTool(Tool):
 
             return "\n".join(items)
         except PermissionError:
-            return f"Error: Permission denied: {path}"
+            return f"Error: Permission denied"
         except Exception as e:
             return f"Error listing directory: {str(e)}"

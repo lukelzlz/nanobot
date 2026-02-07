@@ -27,7 +27,13 @@ class SubagentManager:
     Subagents are lightweight agent instances that run in the background
     to handle specific tasks. They share the same LLM provider but have
     isolated context and a focused system prompt.
+
+    SECURITY: Resource limits are enforced to prevent DoS attacks.
     """
+
+    # Resource limits to prevent DoS
+    MAX_CONCURRENT_SUBAGENTS = 10
+    SUBAGENT_TIMEOUT = 300  # 5 minutes total timeout per subagent
 
     def __init__(
         self,
@@ -57,6 +63,8 @@ class SubagentManager:
         """
         Spawn a subagent to execute a task in the background.
 
+        SECURITY: Enforces MAX_CONCURRENT_SUBAGENTS limit to prevent DoS.
+
         Args:
             task: The task description for the subagent.
             label: Optional human-readable label for the task.
@@ -64,8 +72,14 @@ class SubagentManager:
             origin_chat_id: The chat ID to announce results to.
 
         Returns:
-            Status message indicating the subagent was started.
+            Status message indicating the subagent was started or error.
         """
+        # Check concurrent subagent limit
+        running_count = len(self._running_tasks)
+        if running_count >= self.MAX_CONCURRENT_SUBAGENTS:
+            return (f"Error: Maximum concurrent subagent limit ({self.MAX_CONCURRENT_SUBAGENTS}) reached. "
+                    f"Currently {running_count} subagents running. Please wait for some to complete.")
+
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
 
@@ -93,101 +107,122 @@ class SubagentManager:
         label: str,
         origin: dict[str, str],
     ) -> None:
-        """Execute the subagent task and announce the result."""
+        """
+        Execute the subagent task and announce the result.
+
+        SECURITY: Enforces SUBAGENT_TIMEOUT to prevent runaway subagents.
+        """
         logger.info(f"Subagent [{task_id}] starting task: {label}")
 
         try:
-            # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
-            restrict = self.exec_config.restrict_to_workspace
-            tools.register(ReadFileTool(
-                workspace=self.workspace if restrict else None,
-                restrict_to_workspace=restrict,
-            ))
-            tools.register(WriteFileTool(
-                workspace=self.workspace if restrict else None,
-                restrict_to_workspace=restrict,
-            ))
-            tools.register(EditFileTool(
-                workspace=self.workspace if restrict else None,
-                restrict_to_workspace=restrict,
-            ))
-            tools.register(ListDirTool(
-                workspace=self.workspace if restrict else None,
-                restrict_to_workspace=restrict,
-            ))
-            tools.register(ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.exec_config.restrict_to_workspace,
-            ))
-            tools.register(WebSearchTool(api_key=self.brave_api_key))
-            tools.register(WebFetchTool())
+            # Use timeout for the entire subagent execution
+            async with asyncio.timeout(self.SUBAGENT_TIMEOUT):
+                await self._run_subagent_internal(task_id, task, label, origin)
 
-            # Build messages with subagent-specific prompt
-            system_prompt = self._build_subagent_prompt(task)
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task},
-            ]
-
-            # Run agent loop (limited iterations)
-            max_iterations = 15
-            iteration = 0
-            final_result: str | None = None
-
-            while iteration < max_iterations:
-                iteration += 1
-
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                )
-
-                if response.has_tool_calls:
-                    # Add assistant message with tool calls
-                    tool_call_dicts = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ]
-                    messages.append({
-                        "role": "assistant",
-                        "content": response.content or "",
-                        "tool_calls": tool_call_dicts,
-                    })
-
-                    # Execute tools
-                    for tool_call in response.tool_calls:
-                        logger.debug(f"Subagent [{task_id}] executing: {tool_call.name}")
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": result,
-                        })
-                else:
-                    final_result = response.content
-                    break
-
-            if final_result is None:
-                final_result = "Task completed but no final response was generated."
-
-            logger.info(f"Subagent [{task_id}] completed successfully")
-            await self._announce_result(task_id, label, task, final_result, origin, "ok")
+        except asyncio.TimeoutError:
+            error_msg = f"Error: Subagent timed out after {self.SUBAGENT_TIMEOUT} seconds"
+            logger.error(f"Subagent [{task_id}] timed out")
+            await self._announce_result(task_id, label, task, error_msg, origin, "error")
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             logger.error(f"Subagent [{task_id}] failed: {e}")
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
+
+    async def _run_subagent_internal(
+        self,
+        task_id: str,
+        task: str,
+        label: str,
+        origin: dict[str, str],
+    ) -> None:
+        """Internal subagent execution logic (runs within timeout)."""
+        # Build subagent tools (no message tool, no spawn tool)
+        tools = ToolRegistry()
+        restrict = self.exec_config.restrict_to_workspace
+        tools.register(ReadFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        tools.register(WriteFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        tools.register(EditFileTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        tools.register(ListDirTool(
+            workspace=self.workspace if restrict else None,
+            restrict_to_workspace=restrict,
+        ))
+        tools.register(ExecTool(
+            working_dir=str(self.workspace),
+            timeout=self.exec_config.timeout,
+            restrict_to_workspace=self.exec_config.restrict_to_workspace,
+        ))
+        tools.register(WebSearchTool(api_key=self.brave_api_key))
+        tools.register(WebFetchTool())
+
+        # Build messages with subagent-specific prompt
+        system_prompt = self._build_subagent_prompt(task)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
+
+        # Run agent loop (limited iterations)
+        max_iterations = 15
+        iteration = 0
+        final_result: str | None = None
+
+        while iteration < max_iterations:
+            iteration += 1
+
+            response = await self.provider.chat(
+                messages=messages,
+                tools=tools.get_definitions(),
+                model=self.model,
+            )
+
+            if response.has_tool_calls:
+                # Add assistant message with tool calls
+                tool_call_dicts = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ]
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content or "",
+                    "tool_calls": tool_call_dicts,
+                })
+
+                # Execute tools
+                for tool_call in response.tool_calls:
+                    logger.debug(f"Subagent [{task_id}] executing: {tool_call.name}")
+                    result = await tools.execute(tool_call.name, tool_call.arguments)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "content": result,
+                    })
+            else:
+                final_result = response.content
+                break
+
+        if final_result is None:
+            final_result = "Task completed but no final response was generated."
+
+        logger.info(f"Subagent [{task_id}] completed successfully")
+        await self._announce_result(task_id, label, task, final_result, origin, "ok")
 
     async def _announce_result(
         self,
