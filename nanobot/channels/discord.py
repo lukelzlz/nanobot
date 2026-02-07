@@ -299,7 +299,7 @@ class DiscordChannel(BaseChannel):
                 if not ext:
                     ext = self._guess_extension(attachment.content_type)
 
-                file_path = media_dir / f"{attachment.id[:16]}{ext}"
+                file_path = media_dir / f"{str(attachment.id)[:16]}{ext}"
 
                 # Download the file
                 await attachment.save(str(file_path))
