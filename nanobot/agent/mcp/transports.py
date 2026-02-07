@@ -61,7 +61,6 @@ class StdioTransport:
         Returns:
             Tuple of (is_safe, error_message)
         """
-        import shlex
         from pathlib import Path
 
         # Check for shell injection patterns in command and args
@@ -98,7 +97,6 @@ class StdioTransport:
         logger.debug(f"Starting MCP server: {' '.join(cmd_list)}")
 
         # Prepare environment with security filtering
-        import os
         env = self._prepare_sanitize_env()
 
         try:

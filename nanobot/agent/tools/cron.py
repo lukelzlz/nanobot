@@ -5,8 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from nanobot.agent.tools.base import Tool
 from nanobot.cron.types import CronSchedule
 
@@ -240,3 +238,12 @@ For reminders, use 'at' schedule type. For recurring tasks, use 'every' or 'cron
             return f"Removed scheduled task {job_id}"
         else:
             return f"Error: Job '{job_id}' not found"
+
+    @property
+    def store_path(self) -> Path:
+        """Expose the store path for testing purposes."""
+        return self._service.store_path
+
+    async def _load_store(self):
+        """Load store for testing purposes."""
+        return await self._service._load_store()

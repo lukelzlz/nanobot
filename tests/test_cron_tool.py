@@ -243,7 +243,8 @@ class TestCronTool:
         result = await new_tool.execute(operation="list")
         assert "persistent" in result
 
-    def test_load_existing_store(self, temp_store: Path):
+    @pytest.mark.asyncio
+    async def test_load_existing_store(self, temp_store: Path):
         """Test loading existing jobs from file."""
         # Create a store file
         temp_store.parent.mkdir(parents=True, exist_ok=True)
@@ -266,7 +267,7 @@ class TestCronTool:
 
         # Create tool and verify loading
         tool = CronTool(temp_store)
-        store = tool._load_store()
+        store = await tool._load_store()
         assert len(store.jobs) == 1
         assert store.jobs[0].name == "existing-job"
 

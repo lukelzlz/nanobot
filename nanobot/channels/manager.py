@@ -52,9 +52,10 @@ async def _retry_with_backoff(
     if last_error:
         raise last_error
 
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import Config
+# Import after function definition to avoid circular dependency
+from nanobot.bus.queue import MessageBus  # noqa: E402
+from nanobot.channels.base import BaseChannel  # noqa: E402
+from nanobot.config.schema import Config  # noqa: E402
 
 
 class ChannelManager:

@@ -1,11 +1,35 @@
 """File system tools: read, write, edit."""
 
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+
+
+def _check_traversal_in_path(path_str: str) -> tuple[bool, str]:
+    """
+    Check for path traversal patterns in raw path string before resolution.
+
+    Args:
+        path_str: The raw path string to check
+
+    Returns:
+        Tuple of (is_safe, error_message)
+    """
+    traversal_patterns = [
+        r"\.\.",               # parent directory
+        r"\.%2e",              # URL-encoded dot
+        r"%2e\.",              # URL-encoded dot (reversed)
+        r"%2e%2e",             # Fully URL-encoded ..
+        r"~%2",                # tilde encoding attempts
+    ]
+
+    for pattern in traversal_patterns:
+        if re.search(pattern, path_str, re.IGNORECASE):
+            return False, "Error: Path traversal detected"
+
+    return True, ""
 
 
 def _validate_path_safety(
@@ -16,31 +40,24 @@ def _validate_path_safety(
     """
     Validate that a path is safe for file operations.
 
+    This function checks for both path traversal patterns AND workspace restrictions.
+    For direct use, it will catch traversal patterns. When called from tool execute()
+    methods, the traversal check is done first via _check_traversal_in_path().
+
     Args:
-        file_path: The path to validate (should be resolved)
+        file_path: The path to validate
         workspace: Optional workspace path to restrict access to
         allow_absolute: Whether to allow absolute paths outside workspace
 
     Returns:
         Tuple of (is_safe, error_message)
     """
-    # Check for path traversal patterns in the original path string
-    # This catches various encoding attempts
+    # Check for path traversal patterns in the path string
+    # This is here for backward compatibility with direct calls to this function
     path_str = str(file_path)
-
-    # Comprehensive traversal pattern detection
-    traversal_patterns = [
-        r"\.\.",               # parent directory
-        r"\.%2e",              # URL-encoded dot
-        r"%2e\.",              # URL-encoded dot (reversed)
-        r"%2e%2e",             # Fully URL-encoded ..
-        r"~%2",                # tilde encoding attempts
-        r"\.\.",               # Unicode and other variants
-    ]
-
-    for pattern in traversal_patterns:
-        if re.search(pattern, path_str, re.IGNORECASE):
-            return False, "Error: Path traversal detected"
+    is_safe, error = _check_traversal_in_path(path_str)
+    if not is_safe:
+        return False, error
 
     # Block expanduser to non-workspace home directories
     if path_str.startswith("~") and workspace is not None:
@@ -65,7 +82,7 @@ def _validate_path_safety(
         # Use is_relative_to for proper path validation (Python 3.9+)
         try:
             if not resolved_path.is_relative_to(workspace_resolved):
-                return False, f"Error: Path outside workspace not allowed"
+                return False, "Error: Path outside workspace not allowed"
         except ValueError:
             # On Windows, is_relative_to raises ValueError for different drives
             return False, "Error: Path on different drive not allowed"
@@ -122,6 +139,11 @@ class ReadFileTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
+            # Check for path traversal BEFORE resolving the path
+            is_safe, error = _check_traversal_in_path(path)
+            if not is_safe:
+                return error
+
             # Don't expanduser by default - it's a security risk
             # Only allow if explicitly within workspace
             file_path = Path(path)
@@ -156,7 +178,7 @@ class ReadFileTool(Tool):
             content = file_path.read_text(encoding="utf-8")
             return content
         except PermissionError:
-            return f"Error: Permission denied"
+            return "Error: Permission denied"
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -204,6 +226,11 @@ class WriteFileTool(Tool):
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
+            # Check for path traversal BEFORE resolving the path
+            is_safe, error = _check_traversal_in_path(path)
+            if not is_safe:
+                return error
+
             # Check content size
             content_size = len(content.encode('utf-8'))
             if content_size > self.max_size:
@@ -232,7 +259,7 @@ class WriteFileTool(Tool):
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {content_size} bytes to {path}"
         except PermissionError:
-            return f"Error: Permission denied"
+            return "Error: Permission denied"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -282,6 +309,11 @@ class EditFileTool(Tool):
 
     async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
+            # Check for path traversal BEFORE resolving the path
+            is_safe, error = _check_traversal_in_path(path)
+            if not is_safe:
+                return error
+
             # Don't use expanduser - security risk
             file_path = Path(path)
 
@@ -318,7 +350,7 @@ class EditFileTool(Tool):
 
             return f"Successfully edited {path}"
         except PermissionError:
-            return f"Error: Permission denied"
+            return "Error: Permission denied"
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
@@ -360,6 +392,11 @@ class ListDirTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
+            # Check for path traversal BEFORE resolving the path
+            is_safe, error = _check_traversal_in_path(path)
+            if not is_safe:
+                return error
+
             # Don't use expanduser - security risk
             dir_path = Path(path)
 
@@ -393,6 +430,6 @@ class ListDirTool(Tool):
 
             return "\n".join(items)
         except PermissionError:
-            return f"Error: Permission denied"
+            return "Error: Permission denied"
         except Exception as e:
             return f"Error listing directory: {str(e)}"
