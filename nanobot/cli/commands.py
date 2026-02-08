@@ -1247,5 +1247,189 @@ def status(
     console.print(f"  Shell: {exec_restricted} (timeout: {config.tools.exec.timeout}s)")
 
 
+# ============================================================================
+# MCP Management
+# ============================================================================
+
+mcp_app = typer.Typer(help="Manage MCP (Model Context Protocol) server configurations")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("list")
+def mcp_list():
+    """List all configured MCP servers."""
+    from nanobot.config.loader import get_config_path, load_config
+
+    config_path = get_config_path()
+    config = load_config()
+
+    if not config.tools.mcp.servers:
+        console.print("[dim]No MCP servers configured.[/dim]")
+        console.print("\n  Add one with: [yellow]nanobot mcp add <name>[/yellow]")
+        return
+
+    table = Table(title="MCP Servers", show_header=True, header_style="bold")
+    table.add_column("Name", style="cyan")
+    table.add_column("Transport")
+    table.add_column("Status")
+    table.add_column("Config")
+
+    for server in config.tools.mcp.servers:
+        status = "[green]enabled[/green]" if server.enabled else "[dim]disabled[/dim]"
+        if server.transport == "stdio":
+            cfg = f"[dim]{server.command} {' '.join(server.args[:2])}...[/dim]"
+        else:  # sse
+            cfg = f"[dim]{server.url}[/dim]"
+
+        table.add_row(server.name, server.transport, status, cfg)
+
+    console.print(table)
+    console.print(f"\nConfig file: {config_path}")
+
+
+@mcp_app.command("add")
+def mcp_add(
+    name: str = typer.Argument(..., help="Server name (unique identifier)"),
+    transport: str = typer.Option("stdio", help="Transport type: stdio or sse"),
+    command: str = typer.Option(None, help="Command to run (for stdio transport)"),
+    args: str = typer.Option("", help="Command arguments (comma-separated, for stdio)"),
+    url: str = typer.Option(None, help="Server URL (for sse transport)"),
+    timeout: int = typer.Option(30, help="Request timeout in seconds"),
+):
+    """Add a new MCP server configuration.
+
+    Examples:
+
+        # Add a filesystem MCP server (stdio)
+        nanobot mcp add fs --transport stdio --command npx --args "-y,@modelcontextprotocol/server-filesystem,/tmp"
+
+        # Add an SSE server
+        nanobot mcp add remote --transport sse --url http://localhost:3000/sse
+    """
+    from nanobot.config.loader import load_config, save_config
+    from nanobot.config.schema import MCPServerConfig
+
+    config = load_config()
+
+    # Validate transport
+    if transport not in ("stdio", "sse"):
+        console.print(f"[red]Error:[/red] Transport must be 'stdio' or 'sse', got '{transport}'")
+        raise typer.Exit(1)
+
+    # Validate transport-specific requirements
+    if transport == "stdio" and not command:
+        console.print("[red]Error:[/red] stdio transport requires --command")
+        console.print("\n  Example: nanobot mcp add myserver --transport stdio --command npx --args '-y,@modelcontextprotocol/server-filesystem,/tmp'")
+        raise typer.Exit(1)
+
+    if transport == "sse" and not url:
+        console.print("[red]Error:[/red] sse transport requires --url")
+        console.print("\n  Example: nanobot mcp add myserver --transport sse --url http://localhost:3000/sse")
+        raise typer.Exit(1)
+
+    # Check for duplicate name
+    for server in config.tools.mcp.servers:
+        if server.name == name:
+            console.print(f"[red]Error:[/red] MCP server '{name}' already exists")
+            console.print(f"  Remove it first with: [yellow]nanobot mcp remove {name}[/yellow]")
+            raise typer.Exit(1)
+
+    # Parse args
+    args_list = [a.strip() for a in args.split(",") if a.strip()] if args else []
+
+    # Create server config
+    server_config = MCPServerConfig(
+        name=name,
+        transport=transport,
+        enabled=True,
+        command=command,
+        args=args_list,
+        url=url,
+        timeout=timeout,
+    )
+
+    # Add to config
+    config.tools.mcp.servers.append(server_config)
+    config.tools.mcp.enabled = True  # Auto-enable MCP if adding a server
+
+    # Save
+    save_config(config)
+
+    console.print(f"[green]✓[/green] MCP server '{name}' added")
+    console.print(f"  Transport: {transport}")
+    if transport == "stdio":
+        console.print(f"  Command: {command} {' '.join(args_list)}")
+    else:
+        console.print(f"  URL: {url}")
+    console.print("\n  Restart bot to apply changes")
+
+
+@mcp_app.command("remove")
+def mcp_remove(
+    name: str = typer.Argument(..., help="Server name to remove"),
+):
+    """Remove an MCP server configuration."""
+    from nanobot.config.loader import load_config, save_config
+
+    config = load_config()
+
+    # Find and remove server
+    original_count = len(config.tools.mcp.servers)
+    config.tools.mcp.servers = [s for s in config.tools.mcp.servers if s.name != name]
+
+    if len(config.tools.mcp.servers) == original_count:
+        console.print(f"[red]Error:[/red] MCP server '{name}' not found")
+        console.print("  List servers with: [yellow]nanobot mcp list[/yellow]")
+        raise typer.Exit(1)
+
+    save_config(config)
+    console.print(f"[green]✓[/green] MCP server '{name}' removed")
+    console.print("\n  Restart bot to apply changes")
+
+
+@mcp_app.command("enable")
+def mcp_enable(
+    name: str = typer.Argument(..., help="Server name to enable"),
+):
+    """Enable an MCP server."""
+    from nanobot.config.loader import load_config, save_config
+
+    config = load_config()
+
+    for server in config.tools.mcp.servers:
+        if server.name == name:
+            server.enabled = True
+            save_config(config)
+            console.print(f"[green]✓[/green] MCP server '{name}' enabled")
+            console.print("\n  Restart bot to apply changes")
+            return
+
+    console.print(f"[red]Error:[/red] MCP server '{name}' not found")
+    console.print("  List servers with: [yellow]nanobot mcp list[/yellow]")
+    raise typer.Exit(1)
+
+
+@mcp_app.command("disable")
+def mcp_disable(
+    name: str = typer.Argument(..., help="Server name to disable"),
+):
+    """Disable an MCP server."""
+    from nanobot.config.loader import load_config, save_config
+
+    config = load_config()
+
+    for server in config.tools.mcp.servers:
+        if server.name == name:
+            server.enabled = False
+            save_config(config)
+            console.print(f"[green]✓[/green] MCP server '{name}' disabled")
+            console.print("\n  Restart bot to apply changes")
+            return
+
+    console.print(f"[red]Error:[/red] MCP server '{name}' not found")
+    console.print("  List servers with: [yellow]nanobot mcp list[/yellow]")
+    raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

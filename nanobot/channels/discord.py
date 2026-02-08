@@ -148,6 +148,49 @@ class DiscordChannel(BaseChannel):
 
         self._bot.tree.add_command(git_group)
 
+        # Create MCP command group
+        mcp_group = app_commands.Group(
+            name="mcp",
+            description="Manage MCP server configurations",
+        )
+
+        mcp_list = app_commands.Command(
+            name="list",
+            description="List all MCP servers",
+            callback=self._slash_mcp_list,
+        )
+        mcp_group.add_command(mcp_list)
+
+        mcp_add = app_commands.Command(
+            name="add",
+            description="Add a new MCP server",
+            callback=self._slash_mcp_add,
+        )
+        mcp_group.add_command(mcp_add)
+
+        mcp_remove = app_commands.Command(
+            name="remove",
+            description="Remove an MCP server",
+            callback=self._slash_mcp_remove,
+        )
+        mcp_group.add_command(mcp_remove)
+
+        mcp_enable = app_commands.Command(
+            name="enable",
+            description="Enable an MCP server",
+            callback=self._slash_mcp_enable,
+        )
+        mcp_group.add_command(mcp_enable)
+
+        mcp_disable = app_commands.Command(
+            name="disable",
+            description="Disable an MCP server",
+            callback=self._slash_mcp_disable,
+        )
+        mcp_group.add_command(mcp_disable)
+
+        self._bot.tree.add_command(mcp_group)
+
         self._commands_registered = True
         logger.debug("Registered slash commands in _create_bot")
 
@@ -793,6 +836,175 @@ class DiscordChannel(BaseChannel):
             result_text = result_text[:1900] + "\n... (truncated)"
 
         await interaction.followup.send(result_text)
+
+    # ========== MCP Commands ==========
+
+    async def _slash_mcp_list(self, interaction: discord.Interaction) -> None:
+        """Handle /mcp list slash command."""
+        from nanobot.config.loader import load_config
+
+        await interaction.response.defer()
+
+        config = load_config()
+
+        if not config.tools.mcp.enabled:
+            await interaction.followup.send("MCP is disabled in config.")
+            return
+
+        if not config.tools.mcp.servers:
+            await interaction.followup.send("No MCP servers configured.\nUse `/mcp add` to add one.")
+            return
+
+        parts = ["🔌 **MCP Servers**\n"]
+
+        for server in config.tools.mcp.servers:
+            status = "✓ enabled" if server.enabled else "✗ disabled"
+
+            if server.transport == "stdio":
+                cfg = f"`{server.command} {' '.join(server.args[:2])}...`"
+            else:  # sse
+                cfg = f"`{server.url}`"
+
+            parts.extend([
+                f"**{server.name}**",
+                f"  Transport: {server.transport}",
+                f"  Config: {cfg}",
+                f"  Status: {status}",
+                "",
+            ])
+
+        result_text = "\n".join(parts)
+
+        # Discord message limit is 2000 chars
+        if len(result_text) > 2000:
+            result_text = result_text[:1900] + "\n... (truncated)"
+
+        await interaction.followup.send(result_text)
+
+    async def _slash_mcp_add(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        transport: str,
+        command: str | None = None,
+        args: str | None = None,
+        url: str | None = None,
+    ) -> None:
+        """Handle /mcp add slash command."""
+        from nanobot.config.loader import load_config, save_config
+        from nanobot.config.schema import MCPServerConfig
+
+        await interaction.response.defer()
+
+        config = load_config()
+
+        # Validate transport
+        if transport not in ("stdio", "sse"):
+            await interaction.followup.send(f"❌ Transport must be 'stdio' or 'sse', got '{transport}'")
+            return
+
+        # Validate transport-specific requirements
+        if transport == "stdio" and not command:
+            await interaction.followup.send("❌ stdio transport requires `command` parameter")
+            return
+
+        if transport == "sse" and not url:
+            await interaction.followup.send("❌ sse transport requires `url` parameter")
+            return
+
+        # Check for duplicate name
+        for server in config.tools.mcp.servers:
+            if server.name == name:
+                await interaction.followup.send(f"❌ MCP server '{name}' already exists")
+                return
+
+        # Parse args
+        args_list = []
+        if args:
+            args_list = [a.strip() for a in args.split(",") if a.strip()]
+
+        # Create server config
+        server_config = MCPServerConfig(
+            name=name,
+            transport=transport,
+            enabled=True,
+            command=command,
+            args=args_list,
+            url=url,
+            timeout=30,
+        )
+
+        # Add to config
+        config.tools.mcp.servers.append(server_config)
+        config.tools.mcp.enabled = True  # Auto-enable MCP
+
+        # Save
+        save_config(config)
+
+        parts = [
+            f"✓ Added MCP server '**{name}**'",
+            f"Transport: {transport}",
+        ]
+        if transport == "stdio":
+            parts.append(f"Command: `{command} {' '.join(args_list)}`")
+        else:
+            parts.append(f"URL: `{url}`")
+        parts.append("\n⚠️ Restart the bot to apply changes")
+
+        await interaction.followup.send("\n".join(parts))
+
+    async def _slash_mcp_remove(self, interaction: discord.Interaction, name: str) -> None:
+        """Handle /mcp remove slash command."""
+        from nanobot.config.loader import load_config, save_config
+
+        await interaction.response.defer()
+
+        config = load_config()
+
+        # Find and remove server
+        original_count = len(config.tools.mcp.servers)
+        config.tools.mcp.servers = [s for s in config.tools.mcp.servers if s.name != name]
+
+        if len(config.tools.mcp.servers) == original_count:
+            await interaction.followup.send(f"❌ MCP server '{name}' not found")
+            return
+
+        save_config(config)
+        await interaction.followup.send(f"✓ Removed MCP server '{name}'\n\n⚠️ Restart the bot to apply changes")
+
+    async def _slash_mcp_enable(self, interaction: discord.Interaction, name: str) -> None:
+        """Handle /mcp enable slash command."""
+        from nanobot.config.loader import load_config, save_config
+
+        await interaction.response.defer()
+
+        config = load_config()
+
+        for server in config.tools.mcp.servers:
+            if server.name == name:
+                server.enabled = True
+                save_config(config)
+                await interaction.followup.send(f"✓ Enabled MCP server '{name}'\n\n⚠️ Restart the bot to apply changes")
+                return
+
+        await interaction.followup.send(f"❌ MCP server '{name}' not found")
+
+    async def _slash_mcp_disable(self, interaction: discord.Interaction, name: str) -> None:
+        """Handle /mcp disable slash command."""
+        from nanobot.config.loader import load_config, save_config
+
+        await interaction.response.defer()
+
+        config = load_config()
+
+        for server in config.tools.mcp.servers:
+            if server.name == name:
+                server.enabled = False
+                save_config(config)
+                await interaction.followup.send(f"✓ Disabled MCP server '{name}'\n\n⚠️ Restart the bot to apply changes")
+                return
+
+        await interaction.followup.send(f"❌ MCP server '{name}' not found")
 
     def _get_media_type(self, content_type: str | None) -> str:
         """Determine media type from content type."""
