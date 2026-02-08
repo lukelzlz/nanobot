@@ -67,6 +67,12 @@ class MCPClient:
         self._tools: dict[str, list[dict[str, Any]]] = {}
         self._resources: dict[str, list[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
+        # Server configs for reconnection
+        self._server_configs: dict[str, MCPServerConfig] = {}
+        # Health check tracking
+        self._health_check_task: asyncio.Task | None = None
+        self._reconnect_attempts: dict[str, int] = {}
+        self._reconnect_callbacks: list[callable] = []
 
     async def connect(self, server_config: MCPServerConfig) -> None:
         """
@@ -84,10 +90,16 @@ class MCPClient:
 
         logger.info(f"Connecting to MCP server: {server_config.name}")
 
+        # Store config for reconnection
+        self._server_configs[server_config.name] = server_config
+
         async with self._lock:
             if server_config.name in self._transports:
                 logger.warning(f"MCP server {server_config.name} already connected")
                 return
+
+            # Reset reconnect attempts on successful manual connection
+            self._reconnect_attempts.pop(server_config.name, None)
 
             try:
                 transport = await self._create_transport(server_config)
@@ -336,3 +348,147 @@ class MCPClient:
                 lines.append(f"  Resources: {len(resources)} available")
 
         return "\n".join(lines)
+
+    # Health check and auto-reconnect methods
+
+    def set_reconnect_callback(self, callback: callable) -> None:
+        """
+        Set a callback to be invoked when a server is reconnected.
+
+        The callback receives (server_name: str, tools: list) as arguments.
+        """
+        self._reconnect_callbacks.append(callback)
+
+    async def start_health_check(self) -> None:
+        """Start the background health check task."""
+        if not self.config.health_check_enabled:
+            logger.info("MCP health check disabled")
+            return
+
+        if self._health_check_task is not None and not self._health_check_task.done():
+            logger.warning("MCP health check already running")
+            return
+
+        logger.info(
+            f"Starting MCP health check (interval: {self.config.health_check_interval}s)"
+        )
+        self._health_check_task = asyncio.create_task(self._health_check_loop())
+
+    async def stop_health_check(self) -> None:
+        """Stop the background health check task."""
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+            self._health_check_task = None
+            logger.info("MCP health check stopped")
+
+    async def _health_check_loop(self) -> None:
+        """Background loop that checks server health and reconnects if needed."""
+        interval = self.config.health_check_interval
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._check_and_reconnect()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in MCP health check loop: {e}")
+
+    async def _check_and_reconnect(self) -> None:
+        """Check all servers and reconnect disconnected ones."""
+        disconnected = []
+
+        # Find disconnected servers
+        for name in list(self._server_configs.keys()):
+            if not self.is_connected(name):
+                disconnected.append(name)
+
+        if not disconnected:
+            return
+
+        # Attempt reconnection
+        for name in disconnected:
+            server_config = self._server_configs.get(name)
+            if not server_config or not server_config.enabled:
+                continue
+
+            await self._reconnect_server(name, server_config)
+
+    async def _reconnect_server(self, name: str, server_config: MCPServerConfig) -> None:
+        """
+        Attempt to reconnect a disconnected server with exponential backoff.
+
+        Args:
+            name: Server name to reconnect.
+            server_config: Server configuration.
+        """
+        attempts = self._reconnect_attempts.get(name, 0)
+        max_attempts = self.config.reconnect_max_attempts
+
+        # Check if we've exceeded max attempts
+        if max_attempts > 0 and attempts >= max_attempts:
+            logger.warning(
+                f"MCP server {name} reconnection failed after {max_attempts} attempts, giving up"
+            )
+            return
+
+        # Calculate delay with exponential backoff
+        delay = min(
+            self.config.reconnect_base_delay * (2 ** attempts),
+            self.config.reconnect_max_delay,
+        )
+
+        self._reconnect_attempts[name] = attempts + 1
+
+        logger.info(
+            f"Attempting to reconnect MCP server {name} "
+            f"(attempt {attempts + 1}/{max_attempts or '∞'}) after {delay:.1f}s delay"
+        )
+
+        await asyncio.sleep(delay)
+
+        try:
+            # Clean up old transport if exists
+            if name in self._transports:
+                old_transport = self._transports.pop(name)
+                try:
+                    await old_transport.stop()
+                except Exception:
+                    pass
+
+            # Create new transport and connect
+            transport = await self._create_transport(server_config)
+            await transport.start()
+            self._transports[name] = transport
+
+            # Fetch tools and resources
+            try:
+                tools = await transport.list_tools()
+                self._tools[name] = tools
+            except Exception as e:
+                logger.warning(f"Failed to list tools from {name}: {e}")
+                self._tools[name] = []
+
+            try:
+                resources = await transport.list_resources()
+                self._resources[name] = resources
+            except Exception:
+                self._resources[name] = []
+
+            # Success - reset attempts
+            self._reconnect_attempts.pop(name, None)
+            logger.info(f"Successfully reconnected MCP server: {name}")
+
+            # Notify callbacks (for re-registering tools)
+            for callback in self._reconnect_callbacks:
+                try:
+                    await callback(name, self._tools.get(name, []))
+                except Exception as e:
+                    logger.error(f"Error in reconnect callback: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to reconnect MCP server {name}: {e}")

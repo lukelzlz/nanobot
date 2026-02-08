@@ -137,6 +137,12 @@ class MCPConfig(BaseModel):
     servers: list[MCPServerConfig] = Field(default_factory=list)
     timeout: int = 30
     max_retries: int = 3
+    # Health check and auto-reconnect
+    health_check_enabled: bool = True
+    health_check_interval: int = 30  # seconds
+    reconnect_max_attempts: int = 5  # 0 = infinite
+    reconnect_base_delay: float = 1.0  # seconds for exponential backoff
+    reconnect_max_delay: float = 60.0  # max seconds between retries
 
 
 class ToolsConfig(BaseModel):

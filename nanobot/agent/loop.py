@@ -220,11 +220,27 @@ class AgentLoop:
         """Start MCP connections and register tools."""
         if self.mcp_client:
             await self._register_mcp_tools()
+            # Set up reconnect callback to re-register tools after reconnection
+            self.mcp_client.set_reconnect_callback(self._on_mcp_reconnect)
+            # Start health check
+            await self.mcp_client.start_health_check()
 
     async def stop_mcp(self) -> None:
         """Stop all MCP connections."""
         if self.mcp_client:
+            await self.mcp_client.stop_health_check()
             await self.mcp_client.disconnect_all()
+
+    async def _on_mcp_reconnect(self, server_name: str, tools: list) -> None:
+        """Callback when an MCP server reconnects - re-register its tools."""
+        for tool_def in tools:
+            adapter = self.mcp_client.create_tool_adapter(server_name, tool_def)
+            # Remove old adapter if exists
+            if adapter.name in self.tools._tools:
+                del self.tools._tools[adapter.name]
+            # Register new adapter
+            self.tools.register(adapter)
+            logger.debug(f"Re-registered MCP tool: {adapter.name} from {server_name}")
 
 
     async def run(self) -> None:
